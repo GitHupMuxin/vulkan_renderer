@@ -1,0 +1,427 @@
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include "engine/core/swapchain.h"
+#include "engine/core/device.h"
+#include "engine/utils/utils.h"
+#include "engine/utils/log.h"
+
+namespace engine::core
+{
+    SwapChain::SwapChain() : swapChain_(VK_NULL_HANDLE), surface_(VK_NULL_HANDLE), extent_({}), imageCount_(0)
+    {
+    
+    }
+    
+    SwapChain::~SwapChain()
+    {
+        this->Destroy();
+    }
+
+    void SwapChain::Destroy()
+    {
+        if (this->swapChain_ != VK_NULL_HANDLE) {
+            for (uint32_t i = 0; i < this->imageCount_; i++) {
+                vkDestroyImageView(this->device_, this->buffers_[i].view, nullptr);
+            }
+            this->fpDestroySwapchainKHR_(this->device_, this->swapChain_, nullptr);
+            this->swapChain_ = VK_NULL_HANDLE;
+        }
+        if (this->surface_ != VK_NULL_HANDLE) {
+            vkDestroySurfaceKHR(this->instance_, this->surface_, nullptr);
+            this->surface_ = VK_NULL_HANDLE;
+        }
+        this->images_.clear();
+        this->buffers_.clear();
+        this->imageCount_ = 0;
+    }
+
+    void SwapChain::Connect(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device)
+    {
+        this->instance_ = instance;
+		this->physicalDevice_ = physicalDevice;
+		this->device_ = device;
+        LOAD_INSTANCE_FUNC(this->instance_, GetPhysicalDeviceSurfaceSupportKHR, this->fpGetPhysicalDeviceSurfaceSupportKHR_);
+        LOAD_INSTANCE_FUNC(this->instance_, GetPhysicalDeviceSurfaceCapabilitiesKHR, this->fpGetPhysicalDeviceSurfaceCapabilitiesKHR_);
+        LOAD_INSTANCE_FUNC(this->instance_, GetPhysicalDeviceSurfaceFormatsKHR, this->fpGetPhysicalDeviceSurfaceFormatsKHR_);
+        LOAD_INSTANCE_FUNC(this->instance_, GetPhysicalDeviceSurfacePresentModesKHR, this->fpGetPhysicalDeviceSurfacePresentModesKHR_);
+        LOAD_DEVICE_FUNC(this->device_, CreateSwapchainKHR, this->fpCreateSwapchainKHR_);
+        LOAD_DEVICE_FUNC(this->device_, DestroySwapchainKHR, this->fpDestroySwapchainKHR_);
+        LOAD_DEVICE_FUNC(this->device_, GetSwapchainImagesKHR, this->fpGetSwapchainImagesKHR_);
+        LOAD_DEVICE_FUNC(this->device_, AcquireNextImageKHR, this->fpAcquireNextImageKHR_);
+        LOAD_DEVICE_FUNC(this->device_, QueuePresentKHR, this->fpQueuePresentKHR_); 
+
+    }
+
+    void SwapChain::CreateSurface(void* platformHandle, void* platformWindow)
+    {                
+		bool success = true;			
+
+        VkWin32SurfaceCreateInfoKHR surfaceCI{};
+        surfaceCI.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+        surfaceCI.hinstance = (HINSTANCE)platformHandle;
+        surfaceCI.hwnd = (HWND)platformWindow;
+        success = vkCreateWin32SurfaceKHR(this->instance_, &surfaceCI, nullptr, &this->surface_) == VK_SUCCESS;
+        if (!success)
+            LOG_ERROR("Failed to create surface.");
+		// Get available queue family properties
+		uint32_t queueCount;
+		vkGetPhysicalDeviceQueueFamilyProperties(this->physicalDevice_, &queueCount, NULL);
+		assert(queueCount >= 1);
+
+		std::vector<VkQueueFamilyProperties> queueProps(queueCount);
+		vkGetPhysicalDeviceQueueFamilyProperties(this->physicalDevice_, &queueCount, queueProps.data());
+
+		// Iterate over each queue to learn whether it supports presenting:
+		// Find a queue with present support
+		// Will be used to present the swap chain images to the windowing system
+		std::vector<VkBool32> supportsPresent(queueCount);
+		for (uint32_t i = 0; i < queueCount; i++) 
+		{
+			fpGetPhysicalDeviceSurfaceSupportKHR_(this->physicalDevice_, i, this->surface_, &supportsPresent[i]);
+		}
+
+		// Search for a graphics and a present queue in the array of queue
+		// families, try to find one that supports both
+		uint32_t graphicsQueueNodeIndex = UINT32_MAX;
+		uint32_t presentQueueNodeIndex = UINT32_MAX;
+		for (uint32_t i = 0; i < queueCount; i++) 
+		{
+			if ((queueProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) 
+			{
+				if (graphicsQueueNodeIndex == UINT32_MAX) 
+				{
+					graphicsQueueNodeIndex = i;
+				}
+
+				if (supportsPresent[i] == VK_TRUE) 
+				{
+					graphicsQueueNodeIndex = i;
+					presentQueueNodeIndex = i;
+					break;
+				}
+			}
+		}
+		if (presentQueueNodeIndex == UINT32_MAX) 
+		{	
+			// If there's no queue that supports both present and graphics
+			// try to find a separate present queue
+			for (uint32_t i = 0; i < queueCount; ++i) 
+			{
+				if (supportsPresent[i] == VK_TRUE) 
+				{
+					presentQueueNodeIndex = i;
+					break;
+				}
+			}
+		}
+
+		// Exit if either a graphics or a presenting queue hasn't been found
+		if (graphicsQueueNodeIndex == UINT32_MAX || presentQueueNodeIndex == UINT32_MAX) {
+			std::cerr << "Could not find a graphics and/or presenting queue!" << std::endl;
+			exit(-1);
+		}
+
+		// todo : Add support for separate graphics and presenting queue
+		if (graphicsQueueNodeIndex != presentQueueNodeIndex) {
+			std::cerr << "Separate graphics and presenting queues are not supported yet!" << std::endl;
+			exit(-1);
+		}
+
+		this->queueNodeIndex_ = graphicsQueueNodeIndex;
+
+		// Get list of supported surface formats
+		uint32_t formatCount;
+		success = this->fpGetPhysicalDeviceSurfaceFormatsKHR_(this->physicalDevice_, this->surface_, &formatCount, NULL) == VK_SUCCESS;
+		SUCCESS_OR_LOG(success, "Failed to get physical device surface formats.");
+		assert(formatCount > 0);
+
+		std::vector<VkSurfaceFormatKHR> surfaceFormats(formatCount);
+		success = this->fpGetPhysicalDeviceSurfaceFormatsKHR_(this->physicalDevice_, this->surface_, &formatCount, surfaceFormats.data()) == VK_SUCCESS;
+		SUCCESS_OR_LOG(success, "Failed to get physical device surface formats.");
+
+		// We want to get a format that best suits our needs, so we try to get one from a set of preferred formats
+		// Initialize the format to the first one returned by the implementation in case we can't find one of the preferred formats
+		VkSurfaceFormatKHR selectedFormat = surfaceFormats[0];
+#ifdef HDR
+		std::vector<VkFormat> preferredImageFormats = {
+				VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+		};
+#else
+		std::vector<VkFormat> preferredImageFormats = {
+				VK_FORMAT_B8G8R8A8_SRGB,
+				VK_FORMAT_R8G8B8A8_SRGB,
+				VK_FORMAT_A8B8G8R8_SRGB_PACK32,
+		};
+#endif
+		for (auto& availableFormat : surfaceFormats) {
+			if (std::find(preferredImageFormats.begin(), preferredImageFormats.end(), availableFormat.format) != preferredImageFormats.end()) {
+				selectedFormat = availableFormat;
+				break;
+			}
+		}
+
+		this->colorFormat_ = selectedFormat.format;
+		this->colorSpace_ = selectedFormat.colorSpace;
+    }
+
+    void SwapChain::CreateSwapChain(uint32_t *width, uint32_t *height, bool vsync)
+    {
+		LOG_INFO("SwapChain: start to create swap chain...");
+        bool success = true;
+        // Implementation for creating the swap chain will go here
+        VkSwapchainKHR oldSwapchain = this->swapChain_;
+
+        // Get physical device surface properties and formats
+		VkSurfaceCapabilitiesKHR surfCaps;
+        success = this->fpGetPhysicalDeviceSurfaceCapabilitiesKHR_(this->physicalDevice_, this->surface_, &surfCaps) == VK_SUCCESS;
+		SUCCESS_OR_LOG(success, "Failed to get physical device surface capabilities.");
+
+		// Get available present modes
+		uint32_t presentModeCount;
+        success = this->fpGetPhysicalDeviceSurfacePresentModesKHR_(this->physicalDevice_, this->surface_, &presentModeCount, NULL) == VK_SUCCESS;
+        SUCCESS_OR_LOG(success, "Failed to get physical device surface present modes.");
+
+        assert(presentModeCount > 0);
+		std::vector<VkPresentModeKHR> presentModes(presentModeCount);
+        success = this->fpGetPhysicalDeviceSurfacePresentModesKHR_(this->physicalDevice_, this->surface_, &presentModeCount, presentModes.data()) == VK_SUCCESS;
+        SUCCESS_OR_LOG(success, "Failed to get physical device surface present modes.");
+
+		// If width (and height) equals the special value 0xFFFFFFFF, the size of the surface will be set by the swapchain
+		if (surfCaps.currentExtent.width == (uint32_t)-1)
+		{
+			// If the surface size is undefined, the size is set to
+			// the size of the images requested.
+			this->extent_.width = *width;
+			this->extent_.height = *height;
+		}
+		else
+		{
+			// If the surface size is defined, the swap chain size must match
+			this->extent_ = surfCaps.currentExtent;
+			*width = surfCaps.currentExtent.width;
+			*height = surfCaps.currentExtent.height;
+		}
+
+
+		// Select a present mode for the swapchain
+
+		// The VK_PRESENT_MODE_FIFO_KHR mode must always be present as per spec
+		// This mode waits for the vertical blank ("v-sync")
+		VkPresentModeKHR swapchainPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+
+        // If v-sync is not requested, try to find a mailbox mode
+		// It's the lowest latency non-tearing present mode available
+		if (!vsync)
+		{
+			for (size_t i = 0; i < presentModeCount; i++)
+			{
+				if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+				{
+					swapchainPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+					break;
+				}
+				if ((swapchainPresentMode != VK_PRESENT_MODE_MAILBOX_KHR) && (presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR))
+				{
+					swapchainPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+				}
+			}
+		}
+
+		// Determine the number of images
+		uint32_t desiredNumberOfSwapchainImages = surfCaps.minImageCount + 1;
+		if ((surfCaps.maxImageCount > 0) && (desiredNumberOfSwapchainImages > surfCaps.maxImageCount))
+		{
+			desiredNumberOfSwapchainImages = surfCaps.maxImageCount;
+		}
+
+		// Find the transformation of the surface
+		VkSurfaceTransformFlagsKHR preTransform;
+		if (surfCaps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+		{
+			// We prefer a non-rotated transform
+			preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+		}
+		else
+		{
+			preTransform = surfCaps.currentTransform;
+		}
+
+		// Find a supported composite alpha format (not all devices support alpha opaque)
+		VkCompositeAlphaFlagBitsKHR compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+		// Simply select the first composite alpha format available
+		std::vector<VkCompositeAlphaFlagBitsKHR> compositeAlphaFlags = {
+			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+			VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+			VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+		};
+		for (auto& compositeAlphaFlag : compositeAlphaFlags) {
+			if (surfCaps.supportedCompositeAlpha & compositeAlphaFlag) {
+				compositeAlpha = compositeAlphaFlag;
+				break;
+			};
+		}
+
+		VkSwapchainCreateInfoKHR swapchainCI = {};
+		swapchainCI.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+		swapchainCI.pNext = NULL;
+		swapchainCI.surface = this->surface_;
+		swapchainCI.minImageCount = desiredNumberOfSwapchainImages;
+		swapchainCI.imageFormat = this->colorFormat_;
+		swapchainCI.imageColorSpace = this->colorSpace_;
+		swapchainCI.imageExtent = { this->extent_.width, this->extent_.height };
+		swapchainCI.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		swapchainCI.preTransform = (VkSurfaceTransformFlagBitsKHR)preTransform;
+		swapchainCI.imageArrayLayers = 1;
+		swapchainCI.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		swapchainCI.queueFamilyIndexCount = 0;
+		swapchainCI.pQueueFamilyIndices = NULL;
+		swapchainCI.presentMode = swapchainPresentMode;
+		swapchainCI.oldSwapchain = oldSwapchain;
+		// Setting clipped to VK_TRUE allows the implementation to discard rendering outside of the surface area
+		swapchainCI.clipped = VK_TRUE;
+		swapchainCI.compositeAlpha = compositeAlpha;
+
+		// Set additional usage flag for blitting from the swapchain images if supported
+		VkFormatProperties formatProps;
+		vkGetPhysicalDeviceFormatProperties(this->physicalDevice_, this->colorFormat_, &formatProps);
+		if ((formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT_KHR) || (formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+			swapchainCI.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
+
+		success = this->fpCreateSwapchainKHR_(this->device_, &swapchainCI, nullptr, &this->swapChain_) == VK_SUCCESS;
+		SUCCESS_OR_LOG(success, "Failed to create swap chain.");
+
+		// If an existing swap chain is re-created, destroy the old swap chain
+		// This also cleans up all the presentable images
+		if (oldSwapchain != VK_NULL_HANDLE) 
+		{ 
+			for (uint32_t i = 0; i < this->imageCount_; i++)
+			{
+				vkDestroyImageView(this->device_, this->buffers_[i].view, nullptr);
+			}
+			this->fpDestroySwapchainKHR_(this->device_, oldSwapchain, nullptr);
+		}
+		success = this->fpGetSwapchainImagesKHR_(this->device_, this->swapChain_, &this->imageCount_, NULL) == VK_SUCCESS;
+		SUCCESS_OR_LOG(success, "Failed to get swap chain images.");
+
+        // Get the swap chain images
+        this->images_.resize(this->imageCount_);
+		success = this->fpGetSwapchainImagesKHR_(this->device_, this->swapChain_, &this->imageCount_, this->images_.data()) == VK_SUCCESS;
+		SUCCESS_OR_LOG(success, "Failed to get swap chain images.");
+
+        // Get the swap chain buffers containing the image and imageview
+        this->buffers_.resize(this->imageCount_);
+        for (uint32_t i = 0; i < this->imageCount_; i++)
+        {
+            VkImageViewCreateInfo colorAttachmentView = {};
+            colorAttachmentView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            colorAttachmentView.pNext = NULL;
+            colorAttachmentView.format = this->colorFormat_;
+            colorAttachmentView.components = {
+                VK_COMPONENT_SWIZZLE_R,
+                VK_COMPONENT_SWIZZLE_G,
+                VK_COMPONENT_SWIZZLE_B,
+                VK_COMPONENT_SWIZZLE_A
+            };
+            colorAttachmentView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            colorAttachmentView.subresourceRange.baseMipLevel = 0;
+            colorAttachmentView.subresourceRange.levelCount = 1;
+            colorAttachmentView.subresourceRange.baseArrayLayer = 0;
+            colorAttachmentView.subresourceRange.layerCount = 1;
+            colorAttachmentView.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            colorAttachmentView.flags = 0;
+
+            this->buffers_[i].image = this->images_[i];
+
+            colorAttachmentView.image = this->buffers_[i].image;
+
+			success = vkCreateImageView(this->device_, &colorAttachmentView, nullptr, &this->buffers_[i].view) == VK_SUCCESS;
+			SUCCESS_OR_LOG(success, "Failed to create image view.");
+        }
+
+		this->SelectDepthFormat();
+    }
+
+	void SwapChain::SelectDepthFormat()
+	{
+		std::vector<VkFormat> depthFormats = { VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
+		VkBool32 validDepthFormat = false;
+		for (auto& format : depthFormats) {
+			VkFormatProperties formatProps;
+			vkGetPhysicalDeviceFormatProperties(this->physicalDevice_, format, &formatProps);
+			if (formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+				this->depthFormat_ = format;
+				validDepthFormat = true;
+				break;
+			}
+		}
+		assert(validDepthFormat);
+	}
+
+
+	VkResult SwapChain::AcquireNextImage(VkSemaphore presentCompleteSemaphore, uint32_t* imageIndex)
+	{
+		if (this->swapChain_ == VK_NULL_HANDLE) 
+		{
+				// Probably acquireNextImage() is called just after cleanup() (e.g. window has been terminated on Android).
+				// todo : Use a dedicated error code.
+				return VK_ERROR_OUT_OF_DATE_KHR;
+		}
+
+			// By setting timeout to UINT64_MAX we will always wait until the next image has been acquired or an actual error is thrown
+			// With that we don't have to handle VK_NOT_READY
+		return fpAcquireNextImageKHR_(this->device_, this->swapChain_, UINT64_MAX, presentCompleteSemaphore, (VkFence)nullptr, imageIndex);
+	}
+
+    VkResult SwapChain::QueuePresent(VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore)
+	{
+		VkPresentInfoKHR presentInfo = {};
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+		presentInfo.pNext = NULL;
+		presentInfo.swapchainCount = 1;
+		presentInfo.pSwapchains = &this->swapChain_;
+		presentInfo.pImageIndices = &imageIndex;
+		// Check if a wait semaphore has been specified to wait for before presenting the image
+		if (waitSemaphore != VK_NULL_HANDLE)
+		{
+			presentInfo.pWaitSemaphores = &waitSemaphore;
+			presentInfo.waitSemaphoreCount = 1;
+		}
+		return this->fpQueuePresentKHR_(queue, &presentInfo);
+	}
+
+    uint32_t SwapChain::GetQueueNodeIndex()
+    {
+        return this->queueNodeIndex_;
+    }
+
+	uint32_t SwapChain::GetImageCount()
+	{
+		return this->imageCount_;
+	}
+
+	SwapChainBuffer& SwapChain::GetSwapChainBuffer(uint32_t index)
+	{
+		assert(index < this->imageCount_);
+		return this->buffers_[index];
+	}
+
+	VkFormat SwapChain::GetColorFormat()
+	{
+		return this->colorFormat_;
+	}
+
+	VkFormat SwapChain::GetDepthFormat()
+	{
+		return this->depthFormat_;
+	}
+
+	VkExtent2D SwapChain::GetExtent()
+	{
+		return this->extent_;
+	}
+}
+
+

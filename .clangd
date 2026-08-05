@@ -1,0 +1,9 @@
+CompileFlags:
+  CompilationDatabase: ./build/gcc
+  Add:
+    - "-IE:\\VulkanSDK\\Include"
+    - "-DVK_USE_PLATFORM_WIN32_KHR"
+    - "-DVK_EXAMPLE_DATA_DIR=\"E:/vulkanProject/Vulkan-glTF-PBR-master/Vulkan-glTF-PBR-master/data/\""
+    - "-DNOMINMAX"
+    - "-D_USE_MATH_DEFINES"
+    - "-D_CRT_SECURE_NO_WARNINGS"

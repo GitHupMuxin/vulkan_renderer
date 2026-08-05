@@ -1,0 +1,24 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "gcc-ninja",
+            "displayName": "GCC Ninja (Debug)",
+            "description": "使用 GCC + Ninja 编译 Debug 版本",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/gcc",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "gcc-ninja",
+            "configurePreset": "gcc-ninja"
+        }
+    ]
+}

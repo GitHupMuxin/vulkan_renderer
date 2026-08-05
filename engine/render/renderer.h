@@ -1,0 +1,143 @@
+#pragma once
+
+#include <unordered_map>
+#include "engine/core/device.h"
+#include "engine/scene/scene.h"
+#include "engine/render/render_pass.h"
+#include "engine/render/fullscreen_pass.h"
+
+namespace engine::render
+{
+    struct RendererControl
+    {
+        bool*       animate;
+
+        float*      animationTimer;
+
+        float*      frameTimer;
+                    
+        int32_t*    animationIndex;
+    };
+
+    class RendererDescription
+    {
+        public:
+            bool enableValidation_ = false;
+            bool fullscreen_ = false;
+            bool vsync_ = false;
+            bool multiSampling_ = true;
+
+            RendererDescription() = default;
+            RendererDescription(const RendererDescription& description) : enableValidation_(description.enableValidation_), fullscreen_(description.fullscreen_), vsync_(description.vsync_), multiSampling_(description.multiSampling_) {}
+    };
+
+    class Attachment
+    {
+        public:
+            VkImage         image_ = VK_NULL_HANDLE;
+            VkImageView     imageView_ = VK_NULL_HANDLE;
+            VkDeviceMemory  memory_ = VK_NULL_HANDLE;
+
+            Attachment() = default;
+            ~Attachment();
+            Attachment(const Attachment&) = delete;
+            Attachment& operator=(const Attachment&) = delete;
+            Attachment(Attachment&& other) noexcept;
+            Attachment& operator=(Attachment&& other) noexcept;
+
+            void Destroy();
+    };
+    
+    class MainRenderPassAttachmentList
+    {
+        public:
+            Attachment colorAttachment_;
+            Attachment depthAttachment_;
+            Attachment multisampleColorAttachment_;
+            Attachment multisampleDepthAttachment_;
+    };
+
+
+
+    class Renderer
+    {
+        private:
+            engine::core::SwapChain                     swapChain_;
+            VkCommandPool                               commandPool_ = VK_NULL_HANDLE;
+
+            std::vector<std::unique_ptr<RenderPass>>    renderPasses_;
+
+            VkPipelineCache                             pipelineCache_ = VK_NULL_HANDLE;
+            uint32_t                                    frameCount_ = 0;
+            std::vector<VkCommandBuffer>                commandBuffers_;
+            std::vector<VkFence>                        waitFences_;
+            std::vector<VkSemaphore>                    renderCompleteSemaphores_;
+            std::vector<VkSemaphore>                    presentCompleteSemaphores_;
+
+            RendererDescription                         rendererDescription_;
+            RenderPassInitInfo                          renderPassInitInfo_;
+
+            VkDescriptorPool                            descriptorPool_ = VK_NULL_HANDLE;
+            
+            VkRenderPass                                mainRenderPass_ = VK_NULL_HANDLE;
+            std::vector<VkFramebuffer>                  frameBuffers_;
+            MainRenderPassAttachmentList                mainAttachmentList_;           
+
+            scene::Scene*                               scene_ = nullptr;
+            uint32_t                                    frameIndex_ = 0;
+
+            uint32_t                                    imageIndex_ = 0;
+
+            VkCommandBuffer                             currentCB_ = VK_NULL_HANDLE;
+
+    	    VkPipeline                                  boundPipeline_{ VK_NULL_HANDLE };
+
+            bool                                        paused_ = false;
+
+            void                                        InitSwapChain(engine::platform::Window& window);
+            void                                        InitCommandPool();
+            void                                        CreatePipelineCache();
+            void                                        CreateSyncObjects();
+            void                                        CreateCommandBuffers();
+            void                                        PrepareUniformBUffers();
+
+            void                                        CreateDescriptorPool();
+
+        public:
+            RendererControl controller;
+
+            Renderer();
+            Renderer(const RendererDescription& description);
+            ~Renderer();
+
+            void                                        Destroy();
+
+            void                                        PrepareFrame();
+            void                                        Init(engine::platform::Window& window);            
+            void                                        AddRenderPass(std::unique_ptr<RenderPass> renderPass); 
+            void                                        BindingScene(scene::Scene* scene);
+
+            void                                        CreateMainRenderPass();
+            void                                        CreatMainFrameBuffer();
+            void                                        DestroyMainFrameBuffer();
+            void                                        RecreateSyncObjects();
+
+            void                                        BeginFrame();
+            void                                        Render();
+            void                                        EndFrame();
+
+            void                                        UpdateParams();
+            void                                        UpdateUniformData();
+
+            VkRenderPass                                GetRenderPass();
+            VkPipelineCache                             GetPipelineCache();
+            VkCommandBuffer                             GetCurrentCommandBuffer();
+
+            void                                        WindowResize(uint32_t width, uint32_t height);
+            void                                        RecordCommandBuffer(); 
+    };
+
+
+}
+
+

@@ -673,7 +673,7 @@ namespace engine::render
         this->CreatMainFrameBuffer();
     }
 
-	void Renderer::BeginFrame()
+	bool Renderer::BeginFrame()
 	{
 		auto& device = core::Device::Instance();
 		bool multiSampling = core::Device::Instance().GetSetting().multiSampling_;
@@ -691,7 +691,7 @@ namespace engine::render
 			this->WindowResize(newExtent.width, newExtent.height);
 			acquire = this->swapChain_.AcquireNextImage(this->presentCompleteSemaphores_[this->frameIndex_], &this->imageIndex_);
 			if (acquire != VK_SUCCESS) {
-				return;
+				return false;
 			}
 		}
 
@@ -748,6 +748,7 @@ namespace engine::render
 		scissor.extent = { extent.width, extent.height };
 		vkCmdSetScissor(this->currentCB_, 0, 1, &scissor);
 
+		return true;
 	}
 
 	void Renderer::Render()

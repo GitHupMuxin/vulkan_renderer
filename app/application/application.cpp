@@ -314,7 +314,9 @@ namespace app
 		}
 
 
-		this->renderer_->BeginFrame();	
+		if (!this->renderer_->BeginFrame()) {
+			return;
+		}
 
 		this->renderer_->Render();
 

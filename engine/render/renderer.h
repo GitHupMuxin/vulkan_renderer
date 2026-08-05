@@ -122,7 +122,7 @@ namespace engine::render
             void                                        DestroyMainFrameBuffer();
             void                                        RecreateSyncObjects();
 
-            void                                        BeginFrame();
+            bool                                        BeginFrame();
             void                                        Render();
             void                                        EndFrame();
 

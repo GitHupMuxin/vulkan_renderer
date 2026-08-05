@@ -105,6 +105,107 @@ LOG_ERROR(msg)
 LOG_FATAL(msg)   // 自动 abort
 ```
 
+## 代码排版与语义层级
+
+优先遵循项目现有风格，并吸收 Google C++ 规范中关于命名清晰、类型安全、资源生命周期和可读性的原则；不要机械套用 Google 的 80 列限制或大括号格式。
+
+### 语句与代码块
+
+- 圆括号 `()` 表示一次函数调用或一条表达式的参数范围。
+- 花括号 `{}` 表示函数、条件、循环等代码块。
+- 控制流和函数的左右花括号独立占行，以明确代码块边界。
+- 多行调用的结束符 `);` 独立占行，以明确整条语句结束。
+- 一个完整操作结束后留空行；不要在同一操作的内部随意插入空行。
+
+```cpp
+if (condition)
+{
+    Execute();
+}
+
+SUCCESS_OR_LOG(
+    CreateResource(...) == VK_SUCCESS,
+    "Failed to create resource"
+);
+
+NextOperation();
+```
+
+### 长函数调用
+
+不要仅因调用较长，就机械地把每个参数拆成独立短行。优先保持完整表达式和视觉平衡。
+
+对于外层宏或函数调用，按外层参数的语义分行：
+
+```cpp
+SUCCESS_OR_LOG(
+    vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &attachment.memory_) == VK_SUCCESS,
+    "Failed to allocate image memory"
+);
+```
+
+上述调用的两个语义参数分别是：
+
+1. `vkAllocateMemory(...) == VK_SUCCESS`
+2. 错误信息
+
+因此保持为两行。只有内层调用长到明显难以识别时，才继续拆分其参数。拆分后如果产生大量短小、不对称的行，降低整体可读性，则保留原来的完整表达式。
+
+### Vulkan 创建代码
+
+按资源创建阶段分组，并在每个完整步骤后留空行：
+
+1. 填写 CreateInfo
+2. 创建 Vulkan 对象
+3. 查询内存需求
+4. 分配内存
+5. 绑定内存
+6. 创建 View
+
+不要为了减少函数长度而破坏这一顺序，也不要进行不符合项目风格的过度抽象。
+
+## 架构演进路线
+
+后续开发者必须根据下表的时间与依赖顺序逐步构建。每个阶段都必须恢复到可运行、可审查、可回退的稳定状态后，再继续下一阶段。
+
+| 顺序 | 阶段 | 主要实现 | 完成标准 | 对应 Tag |
+|---:|---|---|---|---|
+| 0 | 当前稳定基线 | 收口 Resize、per-image attachment、extension getter 和现有 skill 修改 | 编译通过；MSAA 开关、拖拽、最小化和恢复正常；Validation 无新增错误 | `arch-stage-0-stable-baseline` |
+| 1 | FrameContext | 将 CommandBuffer、Fence、acquire/present semaphore 按 frames-in-flight 集中管理 | 不再使用平行同步数组；严格区分 `frameIndex_` 与 `imageIndex_`；Resize 正常 | `arch-stage-1-frame-context` |
+| 2 | GPU 可观测性 | Debug Utils、对象命名、Pass Label、Timestamp Query | RenderDoc 可识别 Pass 和对象；UI 能显示已完成帧的 GPU 时间 | `arch-stage-2-gpu-observability` |
+| 3A | Resource Handle | 强类型 Handle、index + generation、资源状态查询 | Scene 不再长期持有资源裸指针；旧 Handle 可检测失效 | `arch-stage-3a-resource-handles` |
+| 3B | RenderScene | SceneExtractor、RenderItem、相机数据、视锥裁剪与分类 | RenderPass 不遍历 Scene/glTF 树；Render 头文件不依赖 `scene.h` | `arch-stage-3b-render-scene` |
+| 4A | 资源生命周期 | `ResourceState`、DeferredDeletion、GPU 完成值 | Handle 可立即失效；Vulkan 对象只在 GPU 使用结束后销毁 | `arch-stage-4a-resource-lifetime` |
+| 4B | 基础异步上传 | 持久映射 staging、UploadContext、graphics queue 批量上传 | Texture/Model 正常加载路径不使用 `vkDeviceWaitIdle` | `arch-stage-4b-upload-context` |
+| 4C | Staging Ring | 环形分配、对齐、回绕、Timeline 回收、大上传回退 | 不覆盖 GPU 未消费数据；连续加载不阻塞帧循环 | `arch-stage-4c-staging-ring` |
+| 4D | 独立传输队列（可选） | Dedicated transfer queue、queue family ownership、后台 IO/解码 | 设备不支持独立队列时可安全回退；上传和渲染可并行 | `arch-stage-4d-transfer-streaming` |
+| 5A | Descriptor Allocator | Persistent Pool、Frame Pool、耗尽扩容与安全 reset | 长期和逐帧 descriptor 生命周期隔离 | `arch-stage-5a-descriptor-allocator` |
+| 5B | Pipeline Cache | 磁盘读取、设备兼容性验证、安全写回 | 重启后可复用缓存；缓存损坏时安全重建 | `arch-stage-5b-pipeline-cache` |
+| 6 | Pass 资源声明 | Pass 显式声明 read/write 和 attachment 用途 | 可检查声明与实际使用；暂不自动排序或创建资源 | `arch-stage-6-pass-resource-declarations` |
+| 7 | 完整 Frame Graph（条件阶段） | DAG、环检测、拓扑排序、资源生命周期、自动 Barrier/Layout、Pass 剔除 | 只有出现 GBuffer、Shadow、后处理等真实多 Pass 需求后才启动 | `arch-stage-7-frame-graph` |
+
+### 后续开发执行规则
+
+不要在同一修改中跨越多个阶段。每个阶段开始前：
+
+1. 检查当前工作区、最新阶段 Tag 和上一阶段验收结果。
+2. 读取当前实现，不要以路线表代替代码事实。
+3. 给出具体文件、接口、数据流、兼容策略和验证方案。
+4. 在用户审查方案之前不要修改文件。
+
+每个阶段完成后：
+
+1. 完成编译、Validation Layer 和对应运行测试。
+2. 保持修改未提交，先交由用户审查。
+3. 只有获得用户明确授权后才能提交。
+4. 提交完成并再次确认稳定后，只有获得用户明确授权才能创建对应的 annotated tag。
+5. Commit、Tag 和 Push 是三个独立动作，不能因用户批准其中一个而自动执行其他动作。
+6. Tag 必须指向已审查的稳定提交，不得给未提交工作区打 Tag。
+7. 已发布 Tag 不得强制移动；如阶段需要重新验收，创建带修订后缀的新 Tag，例如 `arch-stage-2-gpu-observability-r2`。
+8. 只有用户明确授权后才能分别推送 commit 和 tag。
+
+不要为了到达路线终点而提前实现条件阶段。完整 Frame Graph 只有在出现至少三个中间渲染阶段，并产生真实的跨 Pass 资源依赖与 Barrier 管理压力后才启动。
+
 ## 构建系统
 - 构建工具：CMake + Ninja
 - 预设：`gcc-ninja`（GCC + Ninja Debug）

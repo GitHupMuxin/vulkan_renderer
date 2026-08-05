@@ -314,7 +314,8 @@ namespace app
 		}
 
 
-		if (!this->renderer_->BeginFrame()) {
+		if (!this->renderer_->BeginFrame(this->window_.GetWidth(), this->window_.GetHeight()))
+		{
 			return;
 		}
 
@@ -496,7 +497,7 @@ namespace app
             return;
         }
 
-        this->renderer_->WindowResize(width, height);
+        this->renderer_->RequestResize(width, height);
 
         // Update camera aspect ratio for the new size
         this->camera_.SetPerspective(45.0f, (float)width / (float)height, 0.01f, 256.0f);

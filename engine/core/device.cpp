@@ -401,4 +401,39 @@ namespace engine::core
         );
     }
 
+    const std::vector<std::string>& Device::GetSupportedExtension()
+    {
+        this->supportedExtensions_.clear();
+
+        if (this->physicalDevice_.devicehandle_ == VK_NULL_HANDLE)
+        {
+            LOG_ERROR("Device: Cannot enumerate extensions before selecting a physical device.");
+            return this->supportedExtensions_;
+        }
+
+        uint32_t extensionCount = 0;
+        VkResult result = vkEnumerateDeviceExtensionProperties(this->physicalDevice_.devicehandle_, nullptr, &extensionCount, nullptr);
+        if (result != VK_SUCCESS)
+        {
+            LOG_ERROR("Device: Failed to get supported extension count, VkResult: " << result);
+            return this->supportedExtensions_;
+        }
+
+        std::vector<VkExtensionProperties> extensionProperties(extensionCount);
+        result = vkEnumerateDeviceExtensionProperties(this->physicalDevice_.devicehandle_, nullptr, &extensionCount, extensionProperties.data());
+        if (result != VK_SUCCESS)
+        {
+            LOG_ERROR("Device: Failed to enumerate supported extensions, VkResult: " << result);
+            return this->supportedExtensions_;
+        }
+
+        this->supportedExtensions_.reserve(extensionCount);
+        for (const auto& extension : extensionProperties)
+        {
+            this->supportedExtensions_.emplace_back(extension.extensionName);
+        }
+
+        return this->supportedExtensions_;
+    }
+
 }

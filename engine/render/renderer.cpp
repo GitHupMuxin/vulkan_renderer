@@ -403,24 +403,18 @@ namespace engine::render
 		}
 	}
 
-	void Renderer::CreatMainFrameBuffer()
+	void Renderer::CreateMainAttachments(MainRenderPassAttachmentList& attachmentList)
 	{
-		LOG_INFO("Renderer: start to create main frame buffer...");
 		auto& device = core::Device::Instance();
-		/*
-		MSAA
-		*/
-		if (this->rendererDescription_.multiSampling_) {
-			// Check if device supports requested sample count for color and depth frame buffer
-			//assert((deviceProperties.limits.framebufferColorSampleCounts >= sampleCount) && (deviceProperties.limits.framebufferDepthSampleCounts >= sampleCount));
+		const VkExtent2D extent = this->swapChain_.GetExtent();
 
+		if (this->rendererDescription_.multiSampling_)
+		{
 			VkImageCreateInfo imageCI{};
 			imageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 			imageCI.imageType = VK_IMAGE_TYPE_2D;
 			imageCI.format = this->swapChain_.GetColorFormat();
-			imageCI.extent.width = this->swapChain_.GetExtent().width;
-			imageCI.extent.height = this->swapChain_.GetExtent().height;
-			imageCI.extent.depth = 1;
+			imageCI.extent = { extent.width, extent.height, 1 };
 			imageCI.mipLevels = 1;
 			imageCI.arrayLayers = 1;
 			imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -428,185 +422,176 @@ namespace engine::render
 			imageCI.samples = device.GetMultiSampleCount();
 			imageCI.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 			imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            SUCCESS_OR_LOG(
-                (vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &this->mainAttachmentList_.multisampleColorAttachment_.image_) == VK_SUCCESS),
-                "Failed to create multisample color image");
 
-			VkMemoryRequirements memReqs;
-			vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), this->mainAttachmentList_.multisampleColorAttachment_.image_, &memReqs);
+			SUCCESS_OR_LOG(
+				vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &attachmentList.multisampleColorAttachment_.image_) == VK_SUCCESS,
+				"Failed to create multisample color image"
+			);
+
+			VkMemoryRequirements memReqs{};
+			vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), attachmentList.multisampleColorAttachment_.image_, &memReqs);
 			VkMemoryAllocateInfo memAllocInfo{};
 			memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 			memAllocInfo.allocationSize = memReqs.size;
-			VkBool32 lazyMemTypePresent;
+			VkBool32 lazyMemTypePresent = VK_FALSE;
 			memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, &lazyMemTypePresent);
-			if (!lazyMemTypePresent) {
+			if (!lazyMemTypePresent)
+			{
 				memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 			}
-            SUCCESS_OR_LOG(
-                vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &this->mainAttachmentList_.multisampleColorAttachment_.memory_) == VK_SUCCESS,
-                "Failed to allocate multisample color image memory");
-			vkBindImageMemory(device.GetLogicalDeviceHandle(), this->mainAttachmentList_.multisampleColorAttachment_.image_, this->mainAttachmentList_.multisampleColorAttachment_.memory_, 0);
 
-			// Create image view for the MSAA target
+			SUCCESS_OR_LOG(
+				vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &attachmentList.multisampleColorAttachment_.memory_) == VK_SUCCESS,
+				"Failed to allocate multisample color image memory"
+			);
+
+			SUCCESS_OR_LOG(
+				vkBindImageMemory(device.GetLogicalDeviceHandle(), attachmentList.multisampleColorAttachment_.image_, attachmentList.multisampleColorAttachment_.memory_, 0) == VK_SUCCESS,
+				"Failed to bind multisample color image memory"
+			);
+
 			VkImageViewCreateInfo imageViewCI{};
 			imageViewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-			imageViewCI.image = this->mainAttachmentList_.multisampleColorAttachment_.image_;
+			imageViewCI.image = attachmentList.multisampleColorAttachment_.image_;
 			imageViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
 			imageViewCI.format = this->swapChain_.GetColorFormat();
-			imageViewCI.components.r = VK_COMPONENT_SWIZZLE_R;
-			imageViewCI.components.g = VK_COMPONENT_SWIZZLE_G;
-			imageViewCI.components.b = VK_COMPONENT_SWIZZLE_B;
-			imageViewCI.components.a = VK_COMPONENT_SWIZZLE_A;
 			imageViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			imageViewCI.subresourceRange.levelCount = 1;
 			imageViewCI.subresourceRange.layerCount = 1;
-            SUCCESS_OR_LOG(
-                (vkCreateImageView(device.GetLogicalDeviceHandle(), &imageViewCI, nullptr, &this->mainAttachmentList_.multisampleColorAttachment_.imageView_) == VK_SUCCESS),
-                "Failed to create multisample color image view");
 
-			// Depth target
-			imageCI.imageType = VK_IMAGE_TYPE_2D;
+			SUCCESS_OR_LOG(
+				vkCreateImageView(device.GetLogicalDeviceHandle(), &imageViewCI, nullptr, &attachmentList.multisampleColorAttachment_.imageView_) == VK_SUCCESS,
+				"Failed to create multisample color image view"
+			);
+
 			imageCI.format = this->swapChain_.GetDepthFormat();
-			imageCI.extent.width = this->swapChain_.GetExtent().width;
-			imageCI.extent.height = this->swapChain_.GetExtent().height;
-			imageCI.extent.depth = 1;
-			imageCI.mipLevels = 1;
-			imageCI.arrayLayers = 1;
-			imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-			imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-			imageCI.samples = device.GetMultiSampleCount();
 			imageCI.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-			imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            SUCCESS_OR_LOG(
-                vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &this->mainAttachmentList_.multisampleDepthAttachment_.image_) == VK_SUCCESS,
-                "Failed to create multisample depth image");
 
-			vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), this->mainAttachmentList_.multisampleDepthAttachment_.image_, &memReqs);
-			memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+			SUCCESS_OR_LOG(
+				vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &attachmentList.multisampleDepthAttachment_.image_) == VK_SUCCESS,
+				"Failed to create multisample depth image"
+			);
+
+			vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), attachmentList.multisampleDepthAttachment_.image_, &memReqs);
 			memAllocInfo.allocationSize = memReqs.size;
+			lazyMemTypePresent = VK_FALSE;
 			memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, &lazyMemTypePresent);
-			if (!lazyMemTypePresent) {
+			if (!lazyMemTypePresent)
+			{
 				memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 			}
-            SUCCESS_OR_LOG(
-                vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &this->mainAttachmentList_.multisampleDepthAttachment_.memory_) == VK_SUCCESS,
-                "Failed to allocate multisample depth image memory");
-			vkBindImageMemory(device.GetLogicalDeviceHandle(), this->mainAttachmentList_.multisampleDepthAttachment_.image_, this->mainAttachmentList_.multisampleDepthAttachment_.memory_, 0);
 
-			// Create image view for the MSAA target
-			imageViewCI.image = this->mainAttachmentList_.multisampleDepthAttachment_.image_;
-			imageViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			SUCCESS_OR_LOG(
+				vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &attachmentList.multisampleDepthAttachment_.memory_) == VK_SUCCESS,
+				"Failed to allocate multisample depth image memory"
+			);
+
+			SUCCESS_OR_LOG(
+				vkBindImageMemory(device.GetLogicalDeviceHandle(), attachmentList.multisampleDepthAttachment_.image_, attachmentList.multisampleDepthAttachment_.memory_, 0) == VK_SUCCESS,
+				"Failed to bind multisample depth image memory"
+			);
+
+			imageViewCI.image = attachmentList.multisampleDepthAttachment_.image_;
 			imageViewCI.format = this->swapChain_.GetDepthFormat();
-			imageViewCI.components.r = VK_COMPONENT_SWIZZLE_R;
-			imageViewCI.components.g = VK_COMPONENT_SWIZZLE_G;
-			imageViewCI.components.b = VK_COMPONENT_SWIZZLE_B;
-			imageViewCI.components.a = VK_COMPONENT_SWIZZLE_A;
 			imageViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-			imageViewCI.subresourceRange.levelCount = 1;
-			imageViewCI.subresourceRange.layerCount = 1;
-            SUCCESS_OR_LOG(
-                (vkCreateImageView(device.GetLogicalDeviceHandle(), &imageViewCI, nullptr, &this->mainAttachmentList_.multisampleDepthAttachment_.imageView_) == VK_SUCCESS),
-                "Failed to create multisample depth image view");
+
+			SUCCESS_OR_LOG(
+				vkCreateImageView(device.GetLogicalDeviceHandle(), &imageViewCI, nullptr, &attachmentList.multisampleDepthAttachment_.imageView_) == VK_SUCCESS,
+				"Failed to create multisample depth image view"
+			);
 		}
 
+		VkImageCreateInfo depthImageCI{};
+		depthImageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		depthImageCI.imageType = VK_IMAGE_TYPE_2D;
+		depthImageCI.format = this->swapChain_.GetDepthFormat();
+		depthImageCI.extent = { extent.width, extent.height, 1 };
+		depthImageCI.mipLevels = 1;
+		depthImageCI.arrayLayers = 1;
+		depthImageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+		depthImageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+		depthImageCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
-		// Depth/Stencil attachment is the same for all frame buffers
-
-		VkImageCreateInfo image = {};
-		image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		image.pNext = NULL;
-		image.imageType = VK_IMAGE_TYPE_2D;
-		image.format = this->swapChain_.GetDepthFormat();
-		image.extent = { this->swapChain_.GetExtent().width, this->swapChain_.GetExtent().height, 1 };
-		image.mipLevels = 1;
-		image.arrayLayers = 1;
-		image.samples = VK_SAMPLE_COUNT_1_BIT;
-		image.tiling = VK_IMAGE_TILING_OPTIMAL;
-		image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-		image.flags = 0;
-
-		VkMemoryAllocateInfo mem_alloc = {};
-		mem_alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		mem_alloc.pNext = NULL;
-		mem_alloc.allocationSize = 0;
-		mem_alloc.memoryTypeIndex = 0;
-
-		VkImageViewCreateInfo depthStencilView = {};
-		depthStencilView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		depthStencilView.pNext = NULL;
-		depthStencilView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		depthStencilView.format = this->swapChain_.GetDepthFormat();
-		depthStencilView.flags = 0;
-		depthStencilView.subresourceRange = {};
-		depthStencilView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-		depthStencilView.subresourceRange.baseMipLevel = 0;
-		depthStencilView.subresourceRange.levelCount = 1;
-		depthStencilView.subresourceRange.baseArrayLayer = 0;
-		depthStencilView.subresourceRange.layerCount = 1;
-
-		VkMemoryRequirements memReqs;
-
-        SUCCESS_OR_LOG(
-            vkCreateImage(device.GetLogicalDeviceHandle(), &image, nullptr, &this->mainAttachmentList_.depthAttachment_.image_) == VK_SUCCESS,
-            "Failed to create depth stencil image"
+		SUCCESS_OR_LOG(
+			vkCreateImage(device.GetLogicalDeviceHandle(), &depthImageCI, nullptr, &attachmentList.depthAttachment_.image_) == VK_SUCCESS,
+			"Failed to create depth stencil image"
 		);
 
-		vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), this->mainAttachmentList_.depthAttachment_.image_, &memReqs);
-		mem_alloc.allocationSize = memReqs.size;
-		mem_alloc.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VkMemoryRequirements depthMemReqs{};
+		vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), attachmentList.depthAttachment_.image_, &depthMemReqs);
+		VkMemoryAllocateInfo depthMemAlloc{};
+		depthMemAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		depthMemAlloc.allocationSize = depthMemReqs.size;
+		depthMemAlloc.memoryTypeIndex = device.GetMemoryType(depthMemReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-        SUCCESS_OR_LOG(
-            vkAllocateMemory(device.GetLogicalDeviceHandle(), &mem_alloc, nullptr, &this->mainAttachmentList_.depthAttachment_.memory_) == VK_SUCCESS,
-            "Failed to allocate depth stencil image memory"
+		SUCCESS_OR_LOG(
+			vkAllocateMemory(device.GetLogicalDeviceHandle(), &depthMemAlloc, nullptr, &attachmentList.depthAttachment_.memory_) == VK_SUCCESS,
+			"Failed to allocate depth stencil image memory"
 		);
 
-        SUCCESS_OR_LOG(
-            vkBindImageMemory(device.GetLogicalDeviceHandle(), this->mainAttachmentList_.depthAttachment_.image_, this->mainAttachmentList_.depthAttachment_.memory_, 0) == VK_SUCCESS,
-            "Failed to bind memory to depth stencil image"
+		SUCCESS_OR_LOG(
+			vkBindImageMemory(device.GetLogicalDeviceHandle(), attachmentList.depthAttachment_.image_, attachmentList.depthAttachment_.memory_, 0) == VK_SUCCESS,
+			"Failed to bind depth stencil image memory"
 		);
 
-		depthStencilView.image = this->mainAttachmentList_.depthAttachment_.image_;
+		VkImageViewCreateInfo depthViewCI{};
+		depthViewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		depthViewCI.image = attachmentList.depthAttachment_.image_;
+		depthViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		depthViewCI.format = this->swapChain_.GetDepthFormat();
+		depthViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+		depthViewCI.subresourceRange.levelCount = 1;
+		depthViewCI.subresourceRange.layerCount = 1;
 
-        SUCCESS_OR_LOG(
-            vkCreateImageView(device.GetLogicalDeviceHandle(), &depthStencilView, nullptr, &this->mainAttachmentList_.depthAttachment_.imageView_) == VK_SUCCESS,
-            "Failed to create depth stencil image view"
+		SUCCESS_OR_LOG(
+			vkCreateImageView(device.GetLogicalDeviceHandle(), &depthViewCI, nullptr, &attachmentList.depthAttachment_.imageView_) == VK_SUCCESS,
+			"Failed to create depth stencil image view"
 		);
 
-		//
+	}
 
-		VkImageView attachments[4];
+	void Renderer::CreatMainFrameBuffer()
+	{
+		LOG_INFO("Renderer: start to create main frame buffer...");
+		auto& device = core::Device::Instance();
+		const uint32_t imageCount = this->swapChain_.GetImageCount();
+		const VkExtent2D extent = this->swapChain_.GetExtent();
 
-		if (this->rendererDescription_.multiSampling_) {
-			attachments[0] = this->mainAttachmentList_.multisampleColorAttachment_.imageView_;
-			attachments[2] = this->mainAttachmentList_.multisampleDepthAttachment_.imageView_;
-			attachments[3] = this->mainAttachmentList_.depthAttachment_.imageView_;
-		}
-		else {
-			attachments[1] = this->mainAttachmentList_.depthAttachment_.imageView_;
-		}
+		this->mainAttachmentLists_.resize(imageCount);
+		this->frameBuffers_.resize(imageCount, VK_NULL_HANDLE);
 
-		VkFramebufferCreateInfo frameBufferCI{};
-		frameBufferCI.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		frameBufferCI.pNext = NULL;
-		frameBufferCI.renderPass = this->mainRenderPass_;
-		frameBufferCI.attachmentCount = this->rendererDescription_.multiSampling_ ? 4 : 2;
-		frameBufferCI.pAttachments = attachments;
-		frameBufferCI.width = this->swapChain_.GetExtent().width;
-		frameBufferCI.height = this->swapChain_.GetExtent().height;
-		frameBufferCI.layers = 1;
+		for (uint32_t i = 0; i < imageCount; ++i)
+		{
+			auto& attachmentList = this->mainAttachmentLists_[i];
+			this->CreateMainAttachments(attachmentList);
 
-		// Create frame buffers for every swap chain image
-		this->frameBuffers_.resize(this->swapChain_.GetImageCount());
-		for (uint32_t i = 0; i < frameBuffers_.size(); i++) {
-			if (this->rendererDescription_.multiSampling_) {
+			VkImageView attachments[4]{};
+			if (this->rendererDescription_.multiSampling_)
+			{
+				attachments[0] = attachmentList.multisampleColorAttachment_.imageView_;
 				attachments[1] = this->swapChain_.GetSwapChainBuffer(i).view;
+				attachments[2] = attachmentList.multisampleDepthAttachment_.imageView_;
+				attachments[3] = attachmentList.depthAttachment_.imageView_;
 			}
-			else {
+			else
+			{
 				attachments[0] = this->swapChain_.GetSwapChainBuffer(i).view;
+				attachments[1] = attachmentList.depthAttachment_.imageView_;
 			}
-            SUCCESS_OR_LOG(
-                (vkCreateFramebuffer(device.GetLogicalDeviceHandle(), &frameBufferCI, nullptr, &frameBuffers_[i]) == VK_SUCCESS),
-                "Failed to create framebuffer");
+
+			VkFramebufferCreateInfo frameBufferCI{};
+			frameBufferCI.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			frameBufferCI.renderPass = this->mainRenderPass_;
+			frameBufferCI.attachmentCount = this->rendererDescription_.multiSampling_ ? 4 : 2;
+			frameBufferCI.pAttachments = attachments;
+			frameBufferCI.width = extent.width;
+			frameBufferCI.height = extent.height;
+			frameBufferCI.layers = 1;
+
+			SUCCESS_OR_LOG(
+				vkCreateFramebuffer(device.GetLogicalDeviceHandle(), &frameBufferCI, nullptr, &this->frameBuffers_[i]) == VK_SUCCESS,
+				"Failed to create framebuffer"
+			);
 		}
 	}
 
@@ -621,10 +606,14 @@ namespace engine::render
         }
         this->frameBuffers_.clear();
 
-        this->mainAttachmentList_.multisampleColorAttachment_.Destroy();
-        this->mainAttachmentList_.multisampleDepthAttachment_.Destroy();
-        this->mainAttachmentList_.depthAttachment_.Destroy();
-        this->mainAttachmentList_.colorAttachment_.Destroy();
+        for (auto& attachmentList : this->mainAttachmentLists_)
+        {
+            attachmentList.multisampleColorAttachment_.Destroy();
+            attachmentList.multisampleDepthAttachment_.Destroy();
+            attachmentList.depthAttachment_.Destroy();
+            attachmentList.colorAttachment_.Destroy();
+        }
+        this->mainAttachmentLists_.clear();
     }
 
     void Renderer::RecreateSyncObjects()
@@ -655,9 +644,22 @@ namespace engine::render
         }
     }
 
-    void Renderer::WindowResize(uint32_t width, uint32_t height)
+    void Renderer::RequestResize(uint32_t width, uint32_t height, bool force)
     {
-        if (width == 0 || height == 0) return;
+        this->resizePending_ = true;
+        this->forceResize_ = this->forceResize_ || force;
+        this->pendingWidth_ = width;
+        this->pendingHeight_ = height;
+    }
+
+    bool Renderer::RecreateSwapChain(uint32_t width, uint32_t height)
+    {
+		LOG_INFO("Renderer: start to recreate swap chain...");
+        if (width == 0 || height == 0)
+        {
+            return false;
+        }
+
         auto& device = core::Device::Instance();
         vkDeviceWaitIdle(device.GetLogicalDeviceHandle());
 
@@ -671,12 +673,48 @@ namespace engine::render
 
         // Rebuild MSAA/depth attachments + framebuffers with the new extent
         this->CreatMainFrameBuffer();
+
+        this->imageIndex_ = 0;
+        this->currentCB_ = VK_NULL_HANDLE;
+        return true;
     }
 
-	bool Renderer::BeginFrame()
+	bool Renderer::BeginFrame(uint32_t windowWidth, uint32_t windowHeight)
 	{
 		auto& device = core::Device::Instance();
 		bool multiSampling = core::Device::Instance().GetSetting().multiSampling_;
+
+		if (windowWidth == 0 || windowHeight == 0)
+		{
+			return false;
+		}
+
+		if (this->forceResize_)
+		{
+			this->pendingWidth_ = windowWidth;
+			this->pendingHeight_ = windowHeight;
+			this->resizePending_ = true;
+		}
+
+		if (this->resizePending_)
+		{
+			const VkExtent2D oldExtent = this->swapChain_.GetExtent();
+			const bool sizeChanged = oldExtent.width != this->pendingWidth_ ||
+				oldExtent.height != this->pendingHeight_;
+			const bool shouldRecreate = this->forceResize_ || sizeChanged;
+			const uint32_t requestedWidth = this->pendingWidth_;
+			const uint32_t requestedHeight = this->pendingHeight_;
+
+			this->resizePending_ = false;
+			this->forceResize_ = false;
+
+			if (shouldRecreate)
+			{
+				this->RecreateSwapChain(requestedWidth, requestedHeight);
+				return false;
+			}
+		}
+
 		VkExtent2D extent = this->swapChain_.GetExtent();
 		
 		SUCCESS_OR_LOG(
@@ -685,14 +723,15 @@ namespace engine::render
 		);
 
 		VkResult acquire = this->swapChain_.AcquireNextImage(this->presentCompleteSemaphores_[this->frameIndex_], &this->imageIndex_);
-		if ((acquire == VK_ERROR_OUT_OF_DATE_KHR) || (acquire == VK_SUBOPTIMAL_KHR)) {
-			// Swapchain is stale (window was resized) -> recreate and retry once
-			VkExtent2D newExtent = this->swapChain_.GetExtent();
-			this->WindowResize(newExtent.width, newExtent.height);
-			acquire = this->swapChain_.AcquireNextImage(this->presentCompleteSemaphores_[this->frameIndex_], &this->imageIndex_);
-			if (acquire != VK_SUCCESS) {
-				return false;
-			}
+		if ((acquire == VK_ERROR_OUT_OF_DATE_KHR) || (acquire == VK_SUBOPTIMAL_KHR))
+		{
+			this->RequestResize(windowWidth, windowHeight, true);
+			return false;
+		}
+		if (acquire != VK_SUCCESS)
+		{
+			LOG_ERROR("Renderer: Failed to acquire swap chain image, VkResult: " << acquire);
+			return false;
 		}
 
 		SUCCESS_OR_LOG(
@@ -805,13 +844,16 @@ namespace engine::render
 		);
 
 		VkResult present = this->swapChain_.QueuePresent(queue, this->imageIndex_, this->renderCompleteSemaphores_[this->imageIndex_]);
-		if (!((present == VK_SUCCESS) || (present == VK_SUBOPTIMAL_KHR))) {
-			if (present == VK_ERROR_OUT_OF_DATE_KHR) {
-				// BeginFrame handles resize on next acquire; skip this frame
-				return;
-			}
-			else if (present != VK_SUCCESS) 
-				LOG_ERROR("Renderer: Failed to present swap chain image.");
+		if ((present == VK_ERROR_OUT_OF_DATE_KHR) || (present == VK_SUBOPTIMAL_KHR))
+		{
+			this->resizePending_ = true;
+			this->forceResize_ = true;
+			return;
+		}
+		if (present != VK_SUCCESS)
+		{
+			LOG_ERROR("Renderer: Failed to present swap chain image, VkResult: " << present);
+			return;
 		}
 
 		if (!this->paused_) {
@@ -901,10 +943,14 @@ namespace engine::render
 			this->mainRenderPass_ = VK_NULL_HANDLE;
 		}
 
-		this->mainAttachmentList_.multisampleColorAttachment_.Destroy();
-		this->mainAttachmentList_.multisampleDepthAttachment_.Destroy();
-		this->mainAttachmentList_.depthAttachment_.Destroy();
-		this->mainAttachmentList_.colorAttachment_.Destroy();
+		for (auto& attachmentList : this->mainAttachmentLists_)
+		{
+			attachmentList.multisampleColorAttachment_.Destroy();
+			attachmentList.multisampleDepthAttachment_.Destroy();
+			attachmentList.depthAttachment_.Destroy();
+			attachmentList.colorAttachment_.Destroy();
+		}
+		this->mainAttachmentLists_.clear();
 		this->renderCompleteSemaphores_.clear();
 		this->presentCompleteSemaphores_.clear();
 		this->waitFences_.clear();

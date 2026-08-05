@@ -81,7 +81,7 @@ namespace engine::render
             
             VkRenderPass                                mainRenderPass_ = VK_NULL_HANDLE;
             std::vector<VkFramebuffer>                  frameBuffers_;
-            MainRenderPassAttachmentList                mainAttachmentList_;           
+            std::vector<MainRenderPassAttachmentList>   mainAttachmentLists_;
 
             scene::Scene*                               scene_ = nullptr;
             uint32_t                                    frameIndex_ = 0;
@@ -93,6 +93,10 @@ namespace engine::render
     	    VkPipeline                                  boundPipeline_{ VK_NULL_HANDLE };
 
             bool                                        paused_ = false;
+            bool                                        resizePending_ = false;
+            bool                                        forceResize_ = false;
+            uint32_t                                    pendingWidth_ = 0;
+            uint32_t                                    pendingHeight_ = 0;
 
             void                                        InitSwapChain(engine::platform::Window& window);
             void                                        InitCommandPool();
@@ -102,6 +106,8 @@ namespace engine::render
             void                                        PrepareUniformBUffers();
 
             void                                        CreateDescriptorPool();
+            void                                        CreateMainAttachments(MainRenderPassAttachmentList& attachmentList);
+            bool                                        RecreateSwapChain(uint32_t width, uint32_t height);
 
         public:
             RendererControl controller;
@@ -122,7 +128,7 @@ namespace engine::render
             void                                        DestroyMainFrameBuffer();
             void                                        RecreateSyncObjects();
 
-            bool                                        BeginFrame();
+            bool                                        BeginFrame(uint32_t windowWidth, uint32_t windowHeight);
             void                                        Render();
             void                                        EndFrame();
 
@@ -133,8 +139,8 @@ namespace engine::render
             VkPipelineCache                             GetPipelineCache();
             VkCommandBuffer                             GetCurrentCommandBuffer();
 
-            void                                        WindowResize(uint32_t width, uint32_t height);
-            void                                        RecordCommandBuffer(); 
+            void                                        RequestResize(uint32_t width, uint32_t height, bool force = false);
+            void                                        RecordCommandBuffer();
     };
 
 

@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include <vector>
 #include <vulkan\vulkan.h>
 #include "engine/core/logical_device.h"
@@ -47,6 +48,7 @@ namespace engine::core
             DeviceSetting       settings_;
             std::vector<const char* > enabledExtension_;
             std::vector<const char* > enabledLayerName_;
+            std::vector<std::string> supportedExtensions_;
             PFN_vkCreateDebugReportCallbackEXT vkCreateDebugReportCallback = nullptr;
             PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallback = nullptr;
             VkDebugReportCallbackEXT debugReportCallback = VK_NULL_HANDLE;

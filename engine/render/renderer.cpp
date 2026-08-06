@@ -103,7 +103,7 @@ namespace engine::render
         this->InitCommandPool();
         this->CreatePipelineCache();
         this->CreateSyncObjects();
-        this->CreateCommandBuffers();
+		this->CreateFrameContexts();
 		this->CreateMainRenderPass();
 		this->CreatMainFrameBuffer();
     }
@@ -136,58 +136,51 @@ namespace engine::render
             "Failed to create pipeline cache");
     }    
 
+    void Renderer::CreateFrameContexts()
+    {
+		LOG_INFO("Renderer: start to create frame contexts...");
+        this->frameContexts_.resize(this->frameCount_);
+
+		for (auto& frameContext : this->frameContexts_)
+		{
+			VkCommandBufferAllocateInfo cmdBufAllocateInfo{};
+			cmdBufAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+			cmdBufAllocateInfo.commandPool = this->commandPool_;
+			cmdBufAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			cmdBufAllocateInfo.commandBufferCount = 1;
+			SUCCESS_OR_LOG(
+				vkAllocateCommandBuffers(core::Device::Instance().GetLogicalDeviceHandle(), &cmdBufAllocateInfo, &frameContext.commandBuffer_) == VK_SUCCESS,
+				"Failed to allocate command buffer"
+			);
+
+			VkFenceCreateInfo fenceCI{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
+			SUCCESS_OR_LOG(
+				vkCreateFence(core::Device::Instance().GetLogicalDeviceHandle(), &fenceCI, nullptr, &frameContext.inFlightFence_) == VK_SUCCESS,
+				"Failed to create fence"
+			);
+
+			VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
+			SUCCESS_OR_LOG(
+				vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &frameContext.imageAvailableSemaphore_) == VK_SUCCESS,
+				"Failed to create image available semaphore"
+			);
+		}
+    }
+
     void Renderer::CreateSyncObjects()
     {
 		LOG_INFO("Renderer: start to create sync objects...");
-        this->waitFences_.resize(this->frameCount_);
-		this->presentCompleteSemaphores_.resize(this->swapChain_.GetImageCount());
-		this->renderCompleteSemaphores_.resize(this->swapChain_.GetImageCount());
-		// this->uniformBuffers_.resize(this->renderAhead_);
-		// this->descriptorSets_.resize(this->renderAhead_);
-		// this->shaderMeshDataBuffers_.resize(this->renderAhead_);
-		// this->descriptorSetsMeshData_.resize(this->renderAhead_);
-		// Command buffer execution fences
-		for (auto &waitFence : this->waitFences_) {
-			VkFenceCreateInfo fenceCI{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
-            SUCCESS_OR_LOG(
-                (vkCreateFence(core::Device::Instance().GetLogicalDeviceHandle(), &fenceCI, nullptr, &waitFence) == VK_SUCCESS),
-                "Failed to create fence");
-		}
-		// Queue ordering semaphores
-		for (auto &semaphore : this->presentCompleteSemaphores_) {
+		this->renderFinishedSemaphores_.resize(this->swapChain_.GetImageCount());
+
+		for (auto& semaphore : this->renderFinishedSemaphores_)
+		{
 			VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
             SUCCESS_OR_LOG(
-                (vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &semaphore) == VK_SUCCESS),
-                "Failed to create present complete semaphore");
-		}
-		for (auto &semaphore : this->renderCompleteSemaphores_) {
-			VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
-            SUCCESS_OR_LOG(
-                (vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &semaphore) == VK_SUCCESS),
-                "Failed to create render complete semaphore");
+                vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &semaphore) == VK_SUCCESS,
+                "Failed to create render complete semaphore"
+			);
 		}
     }
-
-    void Renderer::CreateCommandBuffers()
-    {
-		LOG_INFO("Renderer: start to create command buffers...");
-		this->commandBuffers_.resize(this->frameCount_);
-		VkCommandBufferAllocateInfo cmdBufAllocateInfo{};
-		cmdBufAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		cmdBufAllocateInfo.commandPool = this->commandPool_;
-		cmdBufAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		cmdBufAllocateInfo.commandBufferCount = static_cast<uint32_t>(commandBuffers_.size());
-        SUCCESS_OR_LOG(
-            (vkAllocateCommandBuffers(core::Device::Instance().GetLogicalDeviceHandle(), &cmdBufAllocateInfo, this->commandBuffers_.data()) == VK_SUCCESS),
-            "Failed to allocate command buffers");
-    }
-
-
-    void Renderer::PrepareUniformBUffers()
-    {
-        
-    }
-
 
     void Renderer::CreateDescriptorPool()
 	{
@@ -619,23 +612,18 @@ namespace engine::render
     void Renderer::RecreateSyncObjects()
     {
         auto& device = core::Device::Instance();
-        for (auto& sem : this->renderCompleteSemaphores_) {
-            if (sem != VK_NULL_HANDLE) vkDestroySemaphore(device.GetLogicalDeviceHandle(), sem, nullptr);
-        }
-        for (auto& sem : this->presentCompleteSemaphores_) {
-            if (sem != VK_NULL_HANDLE) vkDestroySemaphore(device.GetLogicalDeviceHandle(), sem, nullptr);
+        for (auto& sem : this->renderFinishedSemaphores_)
+        {
+            if (sem != VK_NULL_HANDLE)
+            {
+                vkDestroySemaphore(device.GetLogicalDeviceHandle(), sem, nullptr);
+            }
         }
 
-        this->presentCompleteSemaphores_.resize(this->swapChain_.GetImageCount());
-        this->renderCompleteSemaphores_.resize(this->swapChain_.GetImageCount());
-        for (auto& sem : this->presentCompleteSemaphores_) {
-            VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
-            SUCCESS_OR_LOG(
-                vkCreateSemaphore(device.GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &sem) == VK_SUCCESS,
-                "Failed to create present complete semaphore"
-            );
-        }
-        for (auto& sem : this->renderCompleteSemaphores_) {
+        this->renderFinishedSemaphores_.resize(this->swapChain_.GetImageCount());
+
+        for (auto& sem : this->renderFinishedSemaphores_)
+		{
             VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
             SUCCESS_OR_LOG(
                 vkCreateSemaphore(device.GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &sem) == VK_SUCCESS,
@@ -715,32 +703,39 @@ namespace engine::render
 			}
 		}
 
+		auto& frameContext = this->frameContexts_[this->frameIndex_];
+
 		VkExtent2D extent = this->swapChain_.GetExtent();
 		
 		SUCCESS_OR_LOG(
-			vkWaitForFences(device.GetLogicalDeviceHandle(), 1, &this->waitFences_[this->frameIndex_], VK_TRUE, UINT64_MAX) == VK_SUCCESS,
+			vkWaitForFences(device.GetLogicalDeviceHandle(), 1, &frameContext.inFlightFence_, VK_TRUE, UINT64_MAX) == VK_SUCCESS,
 			"Renderer: Failed to wait for fences."
 		);
 
-		VkResult acquire = this->swapChain_.AcquireNextImage(this->presentCompleteSemaphores_[this->frameIndex_], &this->imageIndex_);
-		if ((acquire == VK_ERROR_OUT_OF_DATE_KHR) || (acquire == VK_SUBOPTIMAL_KHR))
+		VkResult acquire = this->swapChain_.AcquireNextImage(frameContext.imageAvailableSemaphore_, &this->imageIndex_);
+		if ((acquire == VK_ERROR_OUT_OF_DATE_KHR))
 		{
 			this->RequestResize(windowWidth, windowHeight, true);
 			return false;
 		}
-		if (acquire != VK_SUCCESS)
+		else if (acquire == VK_SUBOPTIMAL_KHR)
+		{
+			this->RequestResize(windowWidth, windowHeight, true);
+			LOG_WARN("Renderer: Swap chain is suboptimal. Recreating swap chain.");
+		}
+		else if (acquire != VK_SUCCESS)
 		{
 			LOG_ERROR("Renderer: Failed to acquire swap chain image, VkResult: " << acquire);
 			return false;
 		}
 
 		SUCCESS_OR_LOG(
-			vkResetFences(device.GetLogicalDeviceHandle(), 1, &this->waitFences_[this->frameIndex_]) == VK_SUCCESS,
+			vkResetFences(device.GetLogicalDeviceHandle(), 1, &frameContext.inFlightFence_) == VK_SUCCESS,
 			"Renderer: Failed to reset fences."
 		);
 
 
-		vkResetCommandBuffer(this->commandBuffers_[this->frameIndex_], 0);
+		vkResetCommandBuffer(frameContext.commandBuffer_, 0);
 
 		VkCommandBufferBeginInfo cmdBufferBeginInfo{};
 		cmdBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -767,7 +762,7 @@ namespace engine::render
 		renderPassBeginInfo.pClearValues = clearValues;
 		renderPassBeginInfo.framebuffer = this->frameBuffers_[this->imageIndex_];
 
-		this->currentCB_ = this->commandBuffers_[this->frameIndex_];
+		this->currentCB_ = frameContext.commandBuffer_;
 
 		SUCCESS_OR_LOG(
 			vkBeginCommandBuffer(this->currentCB_, &cmdBufferBeginInfo) == VK_SUCCESS,
@@ -812,6 +807,7 @@ namespace engine::render
 	void Renderer::EndFrame()
 	{
 		auto queue = core::Device::Instance().GetGraphicsQueue();
+		auto& frameContext = this->frameContexts_[this->frameIndex_];
 
 		vkCmdEndRenderPass(this->currentCB_);
 
@@ -831,19 +827,19 @@ namespace engine::render
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		submitInfo.pWaitDstStageMask = &waitDstStageMask;
-		submitInfo.pWaitSemaphores = &this->presentCompleteSemaphores_[this->frameIndex_];
+		submitInfo.pWaitSemaphores = &frameContext.imageAvailableSemaphore_;
 		submitInfo.waitSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = &this->renderCompleteSemaphores_[this->imageIndex_];
+		submitInfo.pSignalSemaphores = &this->renderFinishedSemaphores_[this->imageIndex_];
 		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pCommandBuffers = &this->commandBuffers_[this->frameIndex_];
+		submitInfo.pCommandBuffers = &frameContext.commandBuffer_;
 		submitInfo.commandBufferCount = 1;
 
 		SUCCESS_OR_LOG(
-			vkQueueSubmit(queue, 1, &submitInfo, this->waitFences_[this->frameIndex_]) == VK_SUCCESS,
+			vkQueueSubmit(queue, 1, &submitInfo, frameContext.inFlightFence_) == VK_SUCCESS,
 			"Renderer: Failed to queue submit."
 		);
 
-		VkResult present = this->swapChain_.QueuePresent(queue, this->imageIndex_, this->renderCompleteSemaphores_[this->imageIndex_]);
+		VkResult present = this->swapChain_.QueuePresent(queue, this->imageIndex_, this->renderFinishedSemaphores_[this->imageIndex_]);
 		if ((present == VK_ERROR_OUT_OF_DATE_KHR) || (present == VK_SUBOPTIMAL_KHR))
 		{
 			this->resizePending_ = true;
@@ -906,24 +902,14 @@ namespace engine::render
             this->pipelineCache_ = VK_NULL_HANDLE;
         }
 
-        for (auto& sem : this->renderCompleteSemaphores_) {
+        for (auto& sem : this->renderFinishedSemaphores_) {
             if (sem != VK_NULL_HANDLE) {
                 vkDestroySemaphore(device.GetLogicalDeviceHandle(), sem, nullptr);
                 sem = VK_NULL_HANDLE;
             }
         }
-        for (auto& sem : this->presentCompleteSemaphores_) {
-            if (sem != VK_NULL_HANDLE) {
-                vkDestroySemaphore(device.GetLogicalDeviceHandle(), sem, nullptr);
-                sem = VK_NULL_HANDLE;
-            }
-        }
-        for (auto& fence : this->waitFences_) {
-            if (fence != VK_NULL_HANDLE) {
-                vkDestroyFence(device.GetLogicalDeviceHandle(), fence, nullptr);
-                fence = VK_NULL_HANDLE;
-            }
-        }
+
+		this->DestroyFrameContexts();
 
         if (this->commandPool_ != VK_NULL_HANDLE) {
             vkDestroyCommandPool(device.GetLogicalDeviceHandle(), this->commandPool_, nullptr);
@@ -950,14 +936,37 @@ namespace engine::render
 			attachmentList.depthAttachment_.Destroy();
 			attachmentList.colorAttachment_.Destroy();
 		}
+
 		this->mainAttachmentLists_.clear();
-		this->renderCompleteSemaphores_.clear();
-		this->presentCompleteSemaphores_.clear();
-		this->waitFences_.clear();
-		this->commandBuffers_.clear();
+		this->renderFinishedSemaphores_.clear();
 		this->currentCB_ = VK_NULL_HANDLE;
 
     }
+
+    void Renderer::DestroyFrameContexts()
+    {
+		for (auto& frameContext : this->frameContexts_)
+		{
+			if (frameContext.commandBuffer_ != VK_NULL_HANDLE)
+			{
+				vkFreeCommandBuffers(core::Device::Instance().GetLogicalDeviceHandle(), this->commandPool_, 1, &frameContext.commandBuffer_);
+				frameContext.commandBuffer_ = VK_NULL_HANDLE;
+			}
+
+			if (frameContext.inFlightFence_ != VK_NULL_HANDLE)
+			{
+				vkDestroyFence(core::Device::Instance().GetLogicalDeviceHandle(), frameContext.inFlightFence_, nullptr);
+				frameContext.inFlightFence_ = VK_NULL_HANDLE;
+			}
+
+			if (frameContext.imageAvailableSemaphore_ != VK_NULL_HANDLE)
+			{
+				vkDestroySemaphore(core::Device::Instance().GetLogicalDeviceHandle(), frameContext.imageAvailableSemaphore_, nullptr);
+				frameContext.imageAvailableSemaphore_ = VK_NULL_HANDLE;
+			}
+		}
+		this->frameContexts_.clear();
+	}
 }
 
 

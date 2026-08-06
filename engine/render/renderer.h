@@ -57,6 +57,13 @@ namespace engine::render
             Attachment multisampleDepthAttachment_;
     };
 
+    struct FrameContext
+    {
+        VkCommandBuffer commandBuffer_ = VK_NULL_HANDLE;
+        VkFence inFlightFence_ = VK_NULL_HANDLE;
+        VkSemaphore imageAvailableSemaphore_ = VK_NULL_HANDLE;
+    };
+
 
 
     class Renderer
@@ -69,10 +76,9 @@ namespace engine::render
 
             VkPipelineCache                             pipelineCache_ = VK_NULL_HANDLE;
             uint32_t                                    frameCount_ = 0;
-            std::vector<VkCommandBuffer>                commandBuffers_;
-            std::vector<VkFence>                        waitFences_;
-            std::vector<VkSemaphore>                    renderCompleteSemaphores_;
-            std::vector<VkSemaphore>                    presentCompleteSemaphores_;
+
+            std::vector<FrameContext>                   frameContexts_;
+            std::vector<VkSemaphore>                    renderFinishedSemaphores_;
 
             RendererDescription                         rendererDescription_;
             RenderPassInitInfo                          renderPassInitInfo_;
@@ -102,12 +108,13 @@ namespace engine::render
             void                                        InitCommandPool();
             void                                        CreatePipelineCache();
             void                                        CreateSyncObjects();
-            void                                        CreateCommandBuffers();
-            void                                        PrepareUniformBUffers();
+            void                                        CreateFrameContexts();
 
             void                                        CreateDescriptorPool();
             void                                        CreateMainAttachments(MainRenderPassAttachmentList& attachmentList);
             bool                                        RecreateSwapChain(uint32_t width, uint32_t height);
+
+            void                                        DestroyFrameContexts();
 
         public:
             RendererControl controller;

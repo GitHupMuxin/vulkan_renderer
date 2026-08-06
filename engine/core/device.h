@@ -9,26 +9,26 @@ namespace engine::core
 {
     struct DeviceSetting
     {
-        bool validation_ = false;
-        bool fullscreen_ = false;
-        bool vsync_ = false;
+        bool                        validation_ = false;
+        bool                        fullscreen_ = false;
+        bool                        vsync_ = false;
 
-        bool multiSampling_ = true;
-        VkSampleCountFlagBits sampleCount_ = VK_SAMPLE_COUNT_4_BIT;
+        bool                        multiSampling_ = true;
+        VkSampleCountFlagBits       sampleCount_ = VK_SAMPLE_COUNT_4_BIT;
 
-        uint32_t frameCount_ = 2;
+        uint32_t                    frameCount_ = 2;
 
-        std::vector<const char* > constInstanceExtensions_{ VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
-        std::vector<const char* > optionalInstanceExtensions_{ };
+        std::vector<const char* >   constInstanceExtensions_{ VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
+        std::vector<const char* >   optionalInstanceExtensions_{ };
 
-        std::vector<const char* > constDeviceExtensions_{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-        std::vector<const char* > optionalDeviceExtensions_{ };
+        std::vector<const char* >   constDeviceExtensions_{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        std::vector<const char* >   optionalDeviceExtensions_{ };
         
-        std::vector<const char* > constDeviceFeature_{ };
-        VkPhysicalDeviceFeatures  requestedFeatures_{ .samplerAnisotropy = VK_TRUE };
+        std::vector<const char* >   constDeviceFeature_{ };
+        VkPhysicalDeviceFeatures    requestedFeatures_{ .samplerAnisotropy = VK_TRUE };
 
-        std::vector<const char* > constEnableLayers_{ };
-        std::vector<const char* > optionalEnableLayers_{ };
+        std::vector<const char* >   constEnableLayers_{ };
+        std::vector<const char* >   optionalEnableLayers_{ };
 
         DeviceSetting() = default;
         DeviceSetting(const DeviceSetting&) = default;
@@ -39,19 +39,19 @@ namespace engine::core
     class Device
     {
         private:
-            VkInstance          instance_ = VK_NULL_HANDLE;
-            PhysicalDevice      physicalDevice_;
-            LogicalDevice       logicalDevice_;
-            VkQueue             queue_ = VK_NULL_HANDLE;
-            VkCommandPool       commandPool_ = VK_NULL_HANDLE;
+            VkInstance                          instance_ = VK_NULL_HANDLE;
+            PhysicalDevice                      physicalDevice_;
+            LogicalDevice                       logicalDevice_;
+            VkQueue                             queue_ = VK_NULL_HANDLE;
+            VkCommandPool                       commandPool_ = VK_NULL_HANDLE;
 
-            DeviceSetting       settings_;
-            std::vector<const char* > enabledExtension_;
-            std::vector<const char* > enabledLayerName_;
-            std::vector<std::string> supportedExtensions_;
-            PFN_vkCreateDebugReportCallbackEXT vkCreateDebugReportCallback = nullptr;
+            DeviceSetting                       settings_;
+            std::vector<const char* >           enabledExtension_;
+            std::vector<const char* >           enabledLayerName_;
+            std::vector<std::string>            supportedExtensions_;
+            PFN_vkCreateDebugReportCallbackEXT  vkCreateDebugReportCallback = nullptr;
             PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallback = nullptr;
-            VkDebugReportCallbackEXT debugReportCallback = VK_NULL_HANDLE;
+            VkDebugReportCallbackEXT            debugReportCallback = VK_NULL_HANDLE;
 
             Device();
             ~Device();

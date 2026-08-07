@@ -4,22 +4,30 @@
 
 namespace engine::core
 {
-    VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessageCallback(VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objType, uint64_t srcObject, size_t location, int32_t msgCode, const char * pLayerPrefix, const char * pMsg, void * pUserData)
+    VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessageCallback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, 
+        VkDebugUtilsMessageTypeFlagsEXT messageType, 
+        const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+        void* userData 
+    )
 	{
-		std::string prefix("");
-		if (flags & VK_DEBUG_REPORT_ERROR_BIT_EXT) 
+        (void)messageType;
+        (void)userData;
+
+        if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         {
-            LOG_ERROR(" [" << pLayerPrefix << "] Code " << msgCode << " : " << pMsg);
-		};
-		if (flags & VK_DEBUG_REPORT_WARNING_BIT_EXT) {
-            LOG_ERROR(" [" << pLayerPrefix << "] Code " << msgCode << " : " << pMsg);
-		};
-		if (flags & VK_DEBUG_REPORT_DEBUG_BIT_EXT) 
+            LOG_ERROR(pCallbackData->pMessage);
+        }
+        else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
         {
-            LOG_ERROR(" [" << pLayerPrefix << "] Code " << msgCode << " : " << pMsg);
-		}
-		fflush(stdout);
-		return VK_FALSE;
+            LOG_WARN(pCallbackData->pMessage);
+        }
+        else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
+        {
+            LOG_INFO(pCallbackData->pMessage);
+        }
+
+        return VK_FALSE;
 	}
 
     Device::Device() { }
@@ -32,8 +40,8 @@ namespace engine::core
             vkDestroyCommandPool(vk, this->commandPool_, nullptr);
         }
         this->logicalDevice_.Destroy();
-        if (this->debugReportCallback != VK_NULL_HANDLE && this->vkDestroyDebugReportCallback) {
-            this->vkDestroyDebugReportCallback(this->instance_, this->debugReportCallback, nullptr);
+        if (this->debugUtilsMessenger_ != VK_NULL_HANDLE && this->destroyDebugUtilsMessenger_) {
+            this->destroyDebugUtilsMessenger_(this->instance_, this->debugUtilsMessenger_, nullptr);
         }
         if (this->instance_ != VK_NULL_HANDLE) {
             vkDestroyInstance(this->instance_, nullptr);
@@ -44,6 +52,16 @@ namespace engine::core
     {
         static Device instance;
         return instance;
+    }
+
+    PFN_vkCmdBeginDebugUtilsLabelEXT Device::GetCmdBeginDebugUtilsLabel()
+    {
+        return this->cmdBeginDebugUtilsLabel_;
+    }
+
+    PFN_vkCmdEndDebugUtilsLabelEXT Device::GetCmdEndDebugUtilsLabel()
+    {
+        return this->cmdEndDebugUtilsLabel_;
     }
 
     void Device::Init(DeviceSetting settings)
@@ -58,7 +76,7 @@ namespace engine::core
         
         if (this->settings_.validation_)
         {
-            SUCCESS_OR_LOG(this->EnableValidationLayer(), "Device: Fail to enable validation layer!");
+            SUCCESS_OR_LOG(this->CreateDebugMessenger(), "Device: Fail to enable validation layer!");
         }
 
         SUCCESS_OR_LOG(this->PickUpAGPU(), "Device: Fail to pick up a GPU!");
@@ -93,7 +111,7 @@ namespace engine::core
         if (this->enabledExtension_.size() > 0)
         {
             if (this->settings_.validation_)
-                this->enabledExtension_.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+                this->enabledExtension_.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
             instanceCI.enabledExtensionCount = (uint32_t)this->enabledExtension_.size();
             instanceCI.ppEnabledExtensionNames = this->enabledExtension_.data();
         }
@@ -112,18 +130,41 @@ namespace engine::core
 
         return vkCreateInstance(&instanceCI, nullptr, &this->instance_) == VK_SUCCESS;
     }   
-    
-    bool Device::EnableValidationLayer()
+
+    bool Device::CreateDebugMessenger()
     {
-        LOG_INFO("Device: start to enable validation layer!");
-        this->vkCreateDebugReportCallback = reinterpret_cast<PFN_vkCreateDebugReportCallbackEXT>(vkGetInstanceProcAddr(this->instance_, "vkCreateDebugReportCallbackEXT"));
-		this->vkDestroyDebugReportCallback = reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(vkGetInstanceProcAddr(this->instance_, "vkDestroyDebugReportCallbackEXT"));
-		VkDebugReportCallbackCreateInfoEXT debugCreateInfo{};
-		debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT;
-		debugCreateInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)DebugMessageCallback;
-		debugCreateInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
-		
-        return vkCreateDebugReportCallback(this->instance_, &debugCreateInfo, nullptr, &debugReportCallback) == VK_SUCCESS;
+        LOG_INFO("Device: start to create debug utils messenger!");
+
+        this->createDebugUtilsMessenger_ = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(this->instance_, "vkCreateDebugUtilsMessengerEXT")
+        );
+
+        this->destroyDebugUtilsMessenger_ = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(this->instance_, "vkDestroyDebugUtilsMessengerEXT")
+        );
+
+        if (this->createDebugUtilsMessenger_ == nullptr || this->destroyDebugUtilsMessenger_ == nullptr)
+        {
+            LOG_WARN("Device: VK_EXT_debug_utils functions are unavailable.");
+            return false;
+        }
+
+        VkDebugUtilsMessengerCreateInfoEXT messengerCreateInfo{};
+        messengerCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+
+        messengerCreateInfo.messageSeverity =
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+
+        messengerCreateInfo.messageType =
+            VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+
+        messengerCreateInfo.pfnUserCallback = DebugMessageCallback;
+
+        return this->createDebugUtilsMessenger_(this->instance_, &messengerCreateInfo, nullptr, &this->debugUtilsMessenger_) == VK_SUCCESS;
     }
 
     bool Device::PickUpAGPU()
@@ -164,6 +205,19 @@ namespace engine::core
             ext.emplace_back(it);
 
         bool success = this->logicalDevice_.Init(ext, this->settings_.requestedFeatures_);
+
+        this->setDebugUtilsObjectName_ = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+            vkGetDeviceProcAddr(this->logicalDevice_.GetDeviceHandle(), "vkSetDebugUtilsObjectNameEXT")
+        );
+
+        this->cmdBeginDebugUtilsLabel_ = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+            vkGetDeviceProcAddr(this->logicalDevice_.GetDeviceHandle(), "vkCmdBeginDebugUtilsLabelEXT")
+        );
+
+        this->cmdEndDebugUtilsLabel_ = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+            vkGetDeviceProcAddr(this->logicalDevice_.GetDeviceHandle(), "vkCmdEndDebugUtilsLabelEXT")
+        );
+
         if(!success)
             SUCCESS_OR_LOG(success, "Device: can not create logical device!");
         return success;
@@ -197,7 +251,8 @@ namespace engine::core
 
         SUCCESS_OR_LOG(
             vkCreateBuffer(this->logicalDevice_.GetDeviceHandle(), &bufferCreateInfo, nullptr, buffer) == VK_SUCCESS,
-            "Device: Failed to create buffer.");
+            "Device: Failed to create buffer."
+        );
 
         // Create the memory backing up the buffer handle
         VkMemoryRequirements memReqs;
@@ -218,7 +273,8 @@ namespace engine::core
             void *mapped;
             SUCCESS_OR_LOG(
                 vkMapMemory(this->logicalDevice_.GetDeviceHandle(), *memory, 0, size, 0, &mapped) == VK_SUCCESS,
-                "Device: Failed to map memory.");
+                "Device: Failed to map memory."
+            );
 
             memcpy(mapped, data, size);
             // If host coherency hasn't been requested, do a manual flush to make writes visible
@@ -237,9 +293,11 @@ namespace engine::core
         // Attach the memory to the buffer object
         SUCCESS_OR_LOG(
             vkBindBufferMemory(this->logicalDevice_.GetDeviceHandle(), *buffer, *memory, 0) == VK_SUCCESS,
-            "Device: Failed to bind buffer memory.");
+            "Device: Failed to bind buffer memory."
+        );
 
-        if (actualBufferSize) {
+        if (actualBufferSize) 
+        {
             *actualBufferSize = memReqs.size;
         }
 
@@ -257,15 +315,18 @@ namespace engine::core
         VkCommandBuffer cmdBuffer;
         SUCCESS_OR_LOG(
             vkAllocateCommandBuffers(this->logicalDevice_.GetDeviceHandle(), &cmdBufAllocateInfo, &cmdBuffer) == VK_SUCCESS,
-            "Device: Failed to create command buffer.");
+            "Device: Failed to create command buffer."
+        );
 
         // If requested, also start recording for the new command buffer
-        if (begin) {
+        if (begin) 
+        {
             VkCommandBufferBeginInfo commandBufferBI{};
             commandBufferBI.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             SUCCESS_OR_LOG(
                 vkBeginCommandBuffer(cmdBuffer, &commandBufferBI) == VK_SUCCESS,
-                "Device: Failed to begin command buffer.");
+                "Device: Failed to begin command buffer."
+            );
         }
 
         return cmdBuffer;
@@ -344,10 +405,14 @@ namespace engine::core
 
     uint32_t  Device::GetMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties, VkBool32 *memTypeFound)
     {
-        for (uint32_t i = 0; i < this->physicalDevice_.deviceMemoryProperties_.memoryTypeCount; i++) {
-            if ((typeBits & 1) == 1) {
-                if ((this->physicalDevice_.deviceMemoryProperties_.memoryTypes[i].propertyFlags & properties) == properties) {
-                    if (memTypeFound) {
+        for (uint32_t i = 0; i < this->physicalDevice_.deviceMemoryProperties_.memoryTypeCount; i++) 
+        {
+            if ((typeBits & 1) == 1) 
+            {
+                if ((this->physicalDevice_.deviceMemoryProperties_.memoryTypes[i].propertyFlags & properties) == properties) 
+                {
+                    if (memTypeFound) 
+                    {
                         *memTypeFound = true;
                     }
                     return i;
@@ -356,10 +421,13 @@ namespace engine::core
             typeBits >>= 1;
         }
 
-        if (memTypeFound) {
+        if (memTypeFound) 
+        {
             *memTypeFound = false;
             return 0;
-        } else {
+        } 
+        else 
+        {
             throw std::runtime_error("Could not find a matching memory type");
         }
     }
@@ -395,40 +463,57 @@ namespace engine::core
     {
         VkCommandBufferBeginInfo commandBufferBI{};
         commandBufferBI.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
         SUCCESS_OR_LOG(
             vkBeginCommandBuffer(commandBuffer, &commandBufferBI) == VK_SUCCESS,
             "Device: Failed to begin command buffer."
         );
     }
 
+    void Device::SetObjectName(VkObjectType objectType, uint64_t objectHandle, const char* name)
+    {
+        if (this->setDebugUtilsObjectName_ && name) 
+        {
+            VkDebugUtilsObjectNameInfoEXT nameInfo{};
+            nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+            nameInfo.objectType = objectType;
+            nameInfo.objectHandle = objectHandle;
+            nameInfo.pObjectName = name;
+
+            this->setDebugUtilsObjectName_(this->logicalDevice_.GetDeviceHandle(), &nameInfo);
+        }
+    }
+
     const std::vector<std::string>& Device::GetSupportedExtension()
     {
         this->supportedExtensions_.clear();
 
-        if (this->physicalDevice_.devicehandle_ == VK_NULL_HANDLE)
+        if (this->physicalDevice_.devicehandle_ == VK_NULL_HANDLE) 
         {
             LOG_ERROR("Device: Cannot enumerate extensions before selecting a physical device.");
             return this->supportedExtensions_;
         }
 
         uint32_t extensionCount = 0;
-        VkResult result = vkEnumerateDeviceExtensionProperties(this->physicalDevice_.devicehandle_, nullptr, &extensionCount, nullptr);
-        if (result != VK_SUCCESS)
+        VkResult result = vkEnumerateDeviceExtensionProperties(
+            this->physicalDevice_.devicehandle_, nullptr, &extensionCount, nullptr);
+        if (result != VK_SUCCESS) 
         {
             LOG_ERROR("Device: Failed to get supported extension count, VkResult: " << result);
             return this->supportedExtensions_;
         }
 
         std::vector<VkExtensionProperties> extensionProperties(extensionCount);
-        result = vkEnumerateDeviceExtensionProperties(this->physicalDevice_.devicehandle_, nullptr, &extensionCount, extensionProperties.data());
-        if (result != VK_SUCCESS)
+        result = vkEnumerateDeviceExtensionProperties(
+            this->physicalDevice_.devicehandle_, nullptr, &extensionCount, extensionProperties.data());
+        if (result != VK_SUCCESS) 
         {
             LOG_ERROR("Device: Failed to enumerate supported extensions, VkResult: " << result);
             return this->supportedExtensions_;
         }
 
         this->supportedExtensions_.reserve(extensionCount);
-        for (const auto& extension : extensionProperties)
+        for (const auto& extension : extensionProperties) 
         {
             this->supportedExtensions_.emplace_back(extension.extensionName);
         }

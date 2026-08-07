@@ -13,7 +13,7 @@ namespace engine::core
         bool                        fullscreen_ = false;
         bool                        vsync_ = false;
 
-        bool                        multiSampling_ = true;
+        bool                        multiSampling_ = false;
         VkSampleCountFlagBits       sampleCount_ = VK_SAMPLE_COUNT_4_BIT;
 
         uint32_t                    frameCount_ = 2;
@@ -49,16 +49,20 @@ namespace engine::core
             std::vector<const char* >           enabledExtension_;
             std::vector<const char* >           enabledLayerName_;
             std::vector<std::string>            supportedExtensions_;
-            PFN_vkCreateDebugReportCallbackEXT  vkCreateDebugReportCallback = nullptr;
-            PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallback = nullptr;
-            VkDebugReportCallbackEXT            debugReportCallback = VK_NULL_HANDLE;
+            PFN_vkCreateDebugUtilsMessengerEXT  createDebugUtilsMessenger_ = nullptr;
+            PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsMessenger_ = nullptr;
+            PFN_vkSetDebugUtilsObjectNameEXT    setDebugUtilsObjectName_ = nullptr;
+            PFN_vkCmdBeginDebugUtilsLabelEXT    cmdBeginDebugUtilsLabel_ = nullptr;
+            PFN_vkCmdEndDebugUtilsLabelEXT      cmdEndDebugUtilsLabel_ = nullptr;
+            VkDebugUtilsMessengerEXT            debugUtilsMessenger_ = VK_NULL_HANDLE;
+
 
             Device();
             ~Device();
 
             void                                InitDevice();
             bool                                CreateInstance();
-            bool                                EnableValidationLayer();
+            bool                                CreateDebugMessenger();
             bool                                PickUpAGPU();
             bool                                CreateLogicDevice();
             bool                                CreateGraphicsQueue();
@@ -69,6 +73,8 @@ namespace engine::core
         public:
            
             static Device&                      Instance();
+            PFN_vkCmdBeginDebugUtilsLabelEXT    GetCmdBeginDebugUtilsLabel();
+            PFN_vkCmdEndDebugUtilsLabelEXT      GetCmdEndDebugUtilsLabel();
 
             void                                Init(DeviceSetting settings = DeviceSetting());
             bool                                CreateBuffer(VkBufferUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, VkBuffer *buffer, VkDeviceMemory *memory, void *data = nullptr, VkDeviceSize *actualBufferSize = nullptr);
@@ -91,6 +97,8 @@ namespace engine::core
             DeviceSetting                       GetSetting();
 
             void                                BeginCommandBuffer(VkCommandBuffer commandBuffer);
+
+            void                                SetObjectName(VkObjectType objectType, uint64_t objectHandle, const char* name);
 
 
             const std::vector<std::string>&     GetSupportedExtension();

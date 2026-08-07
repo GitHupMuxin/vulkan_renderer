@@ -170,9 +170,9 @@ SUCCESS_OR_LOG(
 
 | 顺序 | 阶段 | 主要实现 | 完成标准 | 对应 Tag |
 |---:|---|---|---|---|
-| 0 | 当前稳定基线 | 收口 Resize、per-image attachment、extension getter 和现有 skill 修改 | 编译通过；MSAA 开关、拖拽、最小化和恢复正常；Validation 无新增错误 | `arch-stage-0-stable-baseline` |
-| 1 | FrameContext | 将 CommandBuffer、Fence、acquire/present semaphore 按 frames-in-flight 集中管理 | 不再使用平行同步数组；严格区分 `frameIndex_` 与 `imageIndex_`；Resize 正常 | `arch-stage-1-frame-context` |
-| 2 | GPU 可观测性 | Debug Utils、对象命名、Pass Label、Timestamp Query | RenderDoc 可识别 Pass 和对象；UI 能显示已完成帧的 GPU 时间 | `arch-stage-2-gpu-observability` |
+| 0 | 当前稳定基线 | 收口 Resize、per-image attachment、extension getter 和现有 skill 修改 | 编译通过；MSAA 开关、拖拽、最小化和恢复正常；Validation 无新增错误 | `stage-0` |
+| 1 | FrameContext | CommandBuffer、Fence、imageAvailable 按 `frameIndex_` 管理；renderFinished 按 `imageIndex_` 管理 | 不再使用平行同步数组；严格区分 `frameIndex_` 与 `imageIndex_`；Resize 正常 | `stage-1` |
+| 2 | GPU 可观测性 | Debug Utils、对象命名、Pass Label、Timestamp Query | RenderDoc 可识别 Pass 和对象；UI 能显示已完成帧的 GPU 时间 | `stage-2` |
 | 3A | Resource Handle | 强类型 Handle、index + generation、资源状态查询 | Scene 不再长期持有资源裸指针；旧 Handle 可检测失效 | `arch-stage-3a-resource-handles` |
 | 3B | RenderScene | SceneExtractor、RenderItem、相机数据、视锥裁剪与分类 | RenderPass 不遍历 Scene/glTF 树；Render 头文件不依赖 `scene.h` | `arch-stage-3b-render-scene` |
 | 4A | 资源生命周期 | `ResourceState`、DeferredDeletion、GPU 完成值 | Handle 可立即失效；Vulkan 对象只在 GPU 使用结束后销毁 | `arch-stage-4a-resource-lifetime` |
@@ -201,10 +201,54 @@ SUCCESS_OR_LOG(
 4. 提交完成并再次确认稳定后，只有获得用户明确授权才能创建对应的 annotated tag。
 5. Commit、Tag 和 Push 是三个独立动作，不能因用户批准其中一个而自动执行其他动作。
 6. Tag 必须指向已审查的稳定提交，不得给未提交工作区打 Tag。
-7. 已发布 Tag 不得强制移动；如阶段需要重新验收，创建带修订后缀的新 Tag，例如 `arch-stage-2-gpu-observability-r2`。
+7. 已发布 Tag 不得强制移动；如阶段需要重新验收，创建带修订后缀的新 Tag，例如 `stage-2-r2`。
 8. 只有用户明确授权后才能分别推送 commit 和 tag。
 
 不要为了到达路线终点而提前实现条件阶段。完整 Frame Graph 只有在出现至少三个中间渲染阶段，并产生真实的跨 Pass 资源依赖与 Barrier 管理压力后才启动。
+
+## 协作与讲解规则
+
+- 讲解阶段任务时始终采用“总—分—总”：先说目标，再讲实现细节，最后给验收标准和阶段结论。
+- 用户第一次接触 Vulkan 调试设施。先解释数据流和对象归属，不要求用户记忆套路化 API；用户明确授权后，直接完成套路化代码并保留未提交状态供 review。
+- 在架构选择、生命周期、同步语义或修改范围发生变化前，先给具体方案；不要把简单迁移扩张成不必要的抽象。
+- 修改前先检查 `git status` 和实际 diff。用户可能同时在 VS Code 编辑文件；遇到“磁盘内容更新”冲突时暂停修改，禁止覆盖用户未保存缓冲区。
+- Commit、Push、Tag 继续视为三个独立动作。实际阶段 tag 采用用户选择的短名称；Stage 0/1 已使用 `stage-0`、`stage-1`。
+
+## 当前交接状态（2026-08-06）
+
+### Git 状态
+
+- `stage-0` 指向 `ead68b1`，已推送。
+- `stage-1` 指向 `160b872`，已推送；`origin/main` 当前也停在该提交。
+- `7d1bd16 Clean up core header formatting` 是本地提交，尚未推送。
+- 工作区存在未提交修改：`engine/core/device.h/.cpp`、`engine/render/render_pass.cpp`、`engine/render/renderer.cpp`。必须保留并基于实际 diff 继续，不要还原或覆盖。
+- `renderer.cpp` 主要是用户的花括号/排版调整，不属于 Debug Utils 功能；提交前单独检查 trailing whitespace 和混合缩进。
+
+### Stage 2 分步顺序
+
+按以下顺序逐步实现，每个小步运行通过后再继续：
+
+1. Debug Messenger：用 `VK_EXT_debug_utils` 替换 `VK_EXT_debug_report`。
+2. Object Naming：加载 `vkSetDebugUtilsObjectNameEXT`，给关键 Vulkan 对象命名。
+3. Pass Label：为 Main Frame、Skybox、PBR 添加 CommandBuffer Label。
+4. Timestamp Query：按 FrameContext 分配查询区间，只读取已由 Fence 确认完成的帧。
+5. ImGui：显示最近完成帧的 GPU Frame/Skybox/PBR 时间。
+
+当前第 1 步已经实现并通过编译、运行：
+
+- Debug Messenger 创建成功，Validation Layer 正常加载。
+- Error/Warning/Info 已映射到 `LOG_ERROR`、`LOG_WARN`、`LOG_INFO`。
+- 订阅 `INFO_BIT` 会输出大量 Vulkan Loader 和 NVIDIA implicit layer 信息；这些不是错误。若用户不希望刷屏，只保留 Warning 和 Error。
+- `VK_LAYER_NV_present`、`VK_LAYER_NV_optimus` 是 NVIDIA 驱动隐式层，属于正常信息。
+- Validation 曾报告 Skybox Pipeline 提供 location 3–6、但 Shader 不消费。用户已把 Skybox 顶点输入缩减为 location 0–2；需要在下一窗口重新构建运行，确认警告消失。
+
+下一步从 Object Naming 开始，不要重新迁移 Debug Messenger。先在 `Device` 中加载 `PFN_vkSetDebugUtilsObjectNameEXT`：Debug Messenger 依赖 Instance，对象命名函数依赖 LogicalDevice，因此必须在 `CreateLogicDevice()` 成功后加载。提供无副作用、不可用时直接 no-op 的 `SetObjectName(VkObjectType, uint64_t, const char*)`，第一批只命名：
+
+- Renderer CommandPool、PipelineCache、MainRenderPass。
+- 每个 FrameContext 的 CommandBuffer、Fence、imageAvailable。
+- 每个 swapchain image 的 renderFinished 和 MainFramebuffer。
+
+FrameContext 对象只在初始化时命名；Framebuffer、per-image attachment 和 renderFinished 在 resize 后得到新句柄，必须重新命名。第一版不要创建独立 `DebugUtils` 类，也不要提前加入 Label 或 Timestamp。
 
 ## 构建系统
 - 构建工具：CMake + Ninja

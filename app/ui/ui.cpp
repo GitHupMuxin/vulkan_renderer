@@ -147,9 +147,8 @@ namespace app::ui
         VkPipelineMultisampleStateCreateInfo multisampleStateCI{};
         multisampleStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 
-        if (multiSampleCount > VK_SAMPLE_COUNT_1_BIT) {
-            multisampleStateCI.rasterizationSamples = multiSampleCount;
-        }
+		// 与 Device 的 MSAA 开关保持一致：开 → 传入的 sampleCount，关 → 1x
+		multisampleStateCI.rasterizationSamples = engine::core::Device::Instance().GetSetting().multiSampling_ ? multiSampleCount : VK_SAMPLE_COUNT_1_BIT;
 
         std::vector<VkDynamicState> dynamicStateEnables = {
             VK_DYNAMIC_STATE_VIEWPORT,

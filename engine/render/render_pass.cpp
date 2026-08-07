@@ -143,9 +143,8 @@ namespace engine::render
 		VkPipelineMultisampleStateCreateInfo multisampleStateCI{};
 		multisampleStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 
-		if (device.GetSetting().multiSampling_) {
-			multisampleStateCI.rasterizationSamples = device.GetSetting().sampleCount_;
-		}
+		// rasterizationSamples 必须始终是合法值：MSAA 开 → sampleCount_，关 → 1x
+		multisampleStateCI.rasterizationSamples = device.GetSetting().multiSampling_ ? device.GetSetting().sampleCount_ : VK_SAMPLE_COUNT_1_BIT;
 
 		std::vector<VkDynamicState> dynamicStateEnables = {
 			VK_DYNAMIC_STATE_VIEWPORT,
@@ -176,11 +175,7 @@ namespace engine::render
 		std::vector<VkVertexInputAttributeDescription> vertexInputAttributes = {
 			{ 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(resource::Model::Vertex, pos)},
 			{ 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(resource::Model::Vertex, normal) },
-			{ 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(resource::Model::Vertex, uv0) },
-			{ 3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(resource::Model::Vertex, uv1) },
-			{ 4, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(resource::Model::Vertex, joint0) },
-			{ 5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(resource::Model::Vertex, weight0) },
-			{ 6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(resource::Model::Vertex, color) }
+			{ 2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(resource::Model::Vertex, uv0) }
 		};
 
 		VkPipelineVertexInputStateCreateInfo vertexInputStateCI{};
@@ -280,11 +275,30 @@ namespace engine::render
 
 	void SkyBoxRenderPass::Execute(VkCommandBuffer currentCB, uint32_t frameIndex) 
 	{
+		static auto beginLable = core::Device::Instance().GetCmdBeginDebugUtilsLabel();
+		static auto endLable = core::Device::Instance().GetCmdEndDebugUtilsLabel();
+		if (beginLable)
+		{
+			VkDebugUtilsLabelEXT labelInfo{};
+			labelInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+			labelInfo.pLabelName = "SkyBoxRenderPass";
+			labelInfo.color[0] = 1.0f;
+			labelInfo.color[1] = 1.0f;
+			labelInfo.color[2] = 0.0f;
+			labelInfo.color[3] = 1.0f;
+			beginLable(currentCB, &labelInfo);
+		}
+
 		VkDeviceSize offsets[1] = { 0 };
 
 		vkCmdBindDescriptorSets(currentCB, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout_, 0, 1, &this->descriptorSets_[frameIndex].skybox, 0, nullptr);
 		vkCmdBindPipeline(currentCB, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelines_["skybox"]);
 		this->initInfo_.scene_->skybox_->Draw(currentCB);
+
+		if (endLable)
+		{
+			endLable(currentCB);
+		}
 	}
 
 	void SkyBoxRenderPass::Cleanup() 
@@ -692,9 +706,8 @@ namespace engine::render
 		VkPipelineMultisampleStateCreateInfo multisampleStateCI{};
 		multisampleStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 
-		if (device.GetSetting().multiSampling_) {
-			multisampleStateCI.rasterizationSamples = device.GetSetting().sampleCount_;
-		}
+		// rasterizationSamples 必须始终是合法值：MSAA 开 → sampleCount_，关 → 1x
+		multisampleStateCI.rasterizationSamples = device.GetSetting().multiSampling_ ? device.GetSetting().sampleCount_ : VK_SAMPLE_COUNT_1_BIT;
 
 		std::vector<VkDynamicState> dynamicStateEnables = {
 			VK_DYNAMIC_STATE_VIEWPORT,
@@ -901,6 +914,21 @@ namespace engine::render
 
     void PBRRenderPass::Execute(VkCommandBuffer currentCB, uint32_t frameIndex)
     {
+		static auto beginLable = core::Device::Instance().GetCmdBeginDebugUtilsLabel();
+		static auto endLable = core::Device::Instance().GetCmdEndDebugUtilsLabel();
+
+		if (beginLable) 
+		{
+			VkDebugUtilsLabelEXT labelInfo{};
+			labelInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+			labelInfo.pLabelName = "PBRRenderPass";
+			labelInfo.color[0] = 1.0f;
+			labelInfo.color[1] = 1.0f;
+			labelInfo.color[2] = 0.0f;
+			labelInfo.color[3] = 1.0f;
+			beginLable(currentCB, &labelInfo);
+		}
+
 		VkDeviceSize offsets[1] = { 0 };
 		auto& sceneObjects = this->initInfo_.scene_->sceneObjects_;
 
@@ -930,6 +958,11 @@ namespace engine::render
 			for (auto node : model->GetNodes()) {
 				this->RenderNode(model, node, currentCB, frameIndex, resource::Material::ALPHAMODE_BLEND);
 			}
+		}
+
+		if (endLable)
+		{
+			endLable(currentCB);
 		}
     }
 

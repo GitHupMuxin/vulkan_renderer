@@ -24,6 +24,7 @@ namespace app
         LOG_INFO("Initializing Vulkan...");
 		engine::core::DeviceSetting setting;
     	setting.validation_ = true;
+        setting.multiSampling_ = true;
         engine::core::Device::Instance().Init(setting);
     }
 
@@ -39,7 +40,6 @@ namespace app
     {
         LOG_INFO("Application: start to init renderer...");
         engine::render::RendererDescription rendererDescription;
-		rendererDescription.enableValidation_ = true;
         this->renderer_ = std::make_unique<engine::render::Renderer>(rendererDescription);
         this->renderer_->Init(this->window_);
 
@@ -222,6 +222,20 @@ namespace app
 
 		ImGui::PopItemWidth();
 		ImGui::End();
+
+		// 右上角 GPU 计时面板（独立于主面板）
+		auto gpuTimings = this->renderer_->GetGpuTimings();
+		if (gpuTimings.valid)
+		{
+			ImGui::SetNextWindowPos(ImVec2((float)width - 210.0f, 10.0f), ImGuiSetCond_Always);
+			ImGui::SetNextWindowSize(ImVec2(200.0f, 0.0f), ImGuiSetCond_Always);
+			ImGui::Begin("GPU Timings", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+			ui_->Text("GPU Frame: %.2f ms", gpuTimings.frameTotalMs);
+			ui_->Text("  Skybox: %.2f ms", gpuTimings.skyboxMs);
+			ui_->Text("  PBR: %.2f ms", gpuTimings.pbrMs);
+			ImGui::End();
+		}
+
 		ImGui::Render();
 
 		ImDrawData* imDrawData = ImGui::GetDrawData();

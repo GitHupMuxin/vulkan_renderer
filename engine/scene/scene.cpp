@@ -24,6 +24,15 @@ namespace engine::scene
         }
 
         this->LoadAsset();
+
+        // prefiltered cube map 的 mip 层数由生成阶段决定（numMips），
+        // shader 用它计算 specular IBL 的 textureLod 层级，
+        // 必须从生成好的环境贴图查询，否则未初始化导致 lod 越界
+        if (this->cubeMap_ != nullptr)
+        {
+            this->params_.prefilteredCubeMipLevels = static_cast<float>(this->cubeMap_->GetPrefilteredCubeMipLevels());
+        }
+
         this->UpdateUniformData(0);
     }
 

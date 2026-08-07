@@ -6,6 +6,9 @@
 namespace engine::render
 {
 
+	// 每帧 timestamp 查询槽位数：[0]=FrameStart + 每个 Pass 2 个（开始/结束），预留 8 个 Pass 的容量
+	constexpr uint32_t kGpuQueryCount = 1 + 8 * 2;
+
 	Attachment::~Attachment()
     {
         this->Destroy();
@@ -99,7 +102,19 @@ namespace engine::render
     void Renderer::Init(engine::platform::Window& window)
     {
 		LOG_INFO("Renderer: start to init renderer...");
+		// Device 是 MSAA 配置的唯一权威源，Renderer 在初始化时同步一次，避免两处配置不一致
+		this->rendererDescription_.multiSampling_ = core::Device::Instance().GetSetting().multiSampling_;
 		this->InitSwapChain(window);
+
+		VkPhysicalDeviceProperties props;
+		vkGetPhysicalDeviceProperties(core::Device::Instance().GetPhysicalDeviceHandle(), &props);
+		this->timestampPeriod_ = props.limits.timestampPeriod;  // 每个 tick 的纳秒数
+		this->timestampQuerySupported_ = (props.limits.timestampComputeAndGraphics != 0);
+		if (!this->timestampQuerySupported_) 
+		{
+    		LOG_WARN("Renderer: GPU does not support timestamp queries");
+		}
+
         this->InitCommandPool();
         this->CreatePipelineCache();
         this->CreateSyncObjects();
@@ -124,6 +139,9 @@ namespace engine::render
         SUCCESS_OR_LOG(
             (vkCreateCommandPool(core::Device::Instance().GetLogicalDeviceHandle(), &cmdPoolInfo, nullptr, &this->commandPool_) == VK_SUCCESS),
             "Failed to create command pool");
+
+		core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_COMMAND_POOL, reinterpret_cast<uint64_t>(this->commandPool_), "Renderer Command Pool");
+
     }
 
     void Renderer::CreatePipelineCache()
@@ -132,8 +150,10 @@ namespace engine::render
         VkPipelineCacheCreateInfo pipelineCacheCreateInfo{};
         pipelineCacheCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
         SUCCESS_OR_LOG(
-            (vkCreatePipelineCache(core::Device::Instance().GetLogicalDeviceHandle(), &pipelineCacheCreateInfo, nullptr, &this->pipelineCache_) == VK_SUCCESS),
-            "Failed to create pipeline cache");
+            vkCreatePipelineCache(core::Device::Instance().GetLogicalDeviceHandle(), &pipelineCacheCreateInfo, nullptr, &this->pipelineCache_) == VK_SUCCESS,
+            "Failed to create pipeline cache"
+		);
+		core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_PIPELINE_CACHE, reinterpret_cast<uint64_t>(this->pipelineCache_), "Renderer Pipeline Cache");
     }    
 
     void Renderer::CreateFrameContexts()
@@ -141,7 +161,7 @@ namespace engine::render
 		LOG_INFO("Renderer: start to create frame contexts...");
         this->frameContexts_.resize(this->frameCount_);
 
-		for (auto& frameContext : this->frameContexts_)
+		for (uint32_t i = 0; i < this->frameCount_; ++i)
 		{
 			VkCommandBufferAllocateInfo cmdBufAllocateInfo{};
 			cmdBufAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -149,21 +169,43 @@ namespace engine::render
 			cmdBufAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 			cmdBufAllocateInfo.commandBufferCount = 1;
 			SUCCESS_OR_LOG(
-				vkAllocateCommandBuffers(core::Device::Instance().GetLogicalDeviceHandle(), &cmdBufAllocateInfo, &frameContext.commandBuffer_) == VK_SUCCESS,
+				vkAllocateCommandBuffers(core::Device::Instance().GetLogicalDeviceHandle(), &cmdBufAllocateInfo, &frameContexts_[i].commandBuffer_) == VK_SUCCESS,
 				"Failed to allocate command buffer"
 			);
+			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_COMMAND_BUFFER, reinterpret_cast<uint64_t>(frameContexts_[i].commandBuffer_), ("FrameContext[" + std::to_string(i) + "]: CommandBuffer").c_str());
 
 			VkFenceCreateInfo fenceCI{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
 			SUCCESS_OR_LOG(
-				vkCreateFence(core::Device::Instance().GetLogicalDeviceHandle(), &fenceCI, nullptr, &frameContext.inFlightFence_) == VK_SUCCESS,
+				vkCreateFence(core::Device::Instance().GetLogicalDeviceHandle(), &fenceCI, nullptr, &frameContexts_[i].inFlightFence_) == VK_SUCCESS,
 				"Failed to create fence"
 			);
+			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_FENCE, reinterpret_cast<uint64_t>(frameContexts_[i].inFlightFence_), ("FrameContext[" + std::to_string(i) + "]: InFlightFence").c_str());
 
 			VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
 			SUCCESS_OR_LOG(
-				vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &frameContext.imageAvailableSemaphore_) == VK_SUCCESS,
+				vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &frameContexts_[i].imageAvailableSemaphore_) == VK_SUCCESS,
 				"Failed to create image available semaphore"
 			);
+			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(frameContexts_[i].imageAvailableSemaphore_), ("FrameContext[" + std::to_string(i) + "]: ImageAvailableSemaphore").c_str());
+
+			if (this->timestampQuerySupported_)
+			{
+				// 每个 FrameContext 一个 QueryPool，存放一帧内所有 timestamp
+				// [0]=FrameStart [1]=Pass0 Start [2]=Pass0 End [3]=Pass1 End ...
+				VkQueryPoolCreateInfo queryPoolCI{};
+				queryPoolCI.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+				queryPoolCI.queryType = VK_QUERY_TYPE_TIMESTAMP;
+				queryPoolCI.queryCount = kGpuQueryCount;
+				SUCCESS_OR_LOG(
+					vkCreateQueryPool(core::Device::Instance().GetLogicalDeviceHandle(), &queryPoolCI, nullptr, &frameContexts_[i].queryPool_) == VK_SUCCESS,
+					"Failed to create query pool"
+				);
+				core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_QUERY_POOL, reinterpret_cast<uint64_t>(frameContexts_[i].queryPool_), ("FrameContext[" + std::to_string(i) + "]: QueryPool").c_str());
+
+				// 注意：不要用 vkResetQueryPool（Vulkan 1.2 才进入核心，本工程是 1.0）
+				// 每帧 BeginFrame 中的 vkCmdResetQueryPool（1.0 函数）已负责 reset
+				// 第一帧 vkGetQueryPoolResults 会返回 VK_NOT_READY，被成功检查静默跳过
+			}
 		}
     }
 
@@ -172,13 +214,14 @@ namespace engine::render
 		LOG_INFO("Renderer: start to create sync objects...");
 		this->renderFinishedSemaphores_.resize(this->swapChain_.GetImageCount());
 
-		for (auto& semaphore : this->renderFinishedSemaphores_)
+		for (uint32_t i = 0; i < this->swapChain_.GetImageCount(); ++i)
 		{
 			VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
             SUCCESS_OR_LOG(
-                vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &semaphore) == VK_SUCCESS,
+                vkCreateSemaphore(core::Device::Instance().GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &this->renderFinishedSemaphores_[i]) == VK_SUCCESS,
                 "Failed to create render complete semaphore"
 			);
+			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(this->renderFinishedSemaphores_[i]), ("RenderFinishedSemaphore[" + std::to_string(i) + "]").c_str());
 		}
     }
 
@@ -227,7 +270,8 @@ namespace engine::render
 		LOG_INFO("Renderer: start to create main render pass...");
 		auto& device = core::Device::Instance();
         // Initialization logic for PBRRenderPass
-        if (this->rendererDescription_.multiSampling_) {
+        if (this->rendererDescription_.multiSampling_) 
+		{
 			std::array<VkAttachmentDescription, 4> attachments = {};
 
 			// Multisampled attachment that we render to
@@ -320,9 +364,11 @@ namespace engine::render
 			renderPassCI.pDependencies = dependencies.data();
             SUCCESS_OR_LOG(
                 (vkCreateRenderPass(device.GetLogicalDeviceHandle(), &renderPassCI, nullptr, &this->mainRenderPass_) == VK_SUCCESS),
-                "Failed to create render pass");
+                "Failed to create render pass"
+			);
 		}
-		else {
+		else 
+		{
 			std::array<VkAttachmentDescription, 2> attachments = {};
 			// Color attachment
 			attachments[0].format = this->swapChain_.GetColorFormat();
@@ -394,6 +440,8 @@ namespace engine::render
                 "Failed to create render pass"
 			);
 		}
+
+		device.SetObjectName(VK_OBJECT_TYPE_RENDER_PASS, reinterpret_cast<uint64_t>(this->mainRenderPass_), "Renderer Main Render Pass");		
 	}
 
 	void Renderer::CreateMainAttachments(MainRenderPassAttachmentList& attachmentList)
@@ -585,14 +633,17 @@ namespace engine::render
 				vkCreateFramebuffer(device.GetLogicalDeviceHandle(), &frameBufferCI, nullptr, &this->frameBuffers_[i]) == VK_SUCCESS,
 				"Failed to create framebuffer"
 			);
+			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_FRAMEBUFFER, reinterpret_cast<uint64_t>(this->frameBuffers_[i]), ("Renderer Framebuffer[" + std::to_string(i) + "]").c_str());
 		}
 	}
 
     void Renderer::DestroyMainFrameBuffer()
     {
         auto& device = core::Device::Instance();
-        for (auto& fb : this->frameBuffers_) {
-            if (fb != VK_NULL_HANDLE) {
+        for (auto& fb : this->frameBuffers_) 
+		{
+            if (fb != VK_NULL_HANDLE) 
+			{
                 vkDestroyFramebuffer(device.GetLogicalDeviceHandle(), fb, nullptr);
                 fb = VK_NULL_HANDLE;
             }
@@ -622,13 +673,14 @@ namespace engine::render
 
         this->renderFinishedSemaphores_.resize(this->swapChain_.GetImageCount());
 
-        for (auto& sem : this->renderFinishedSemaphores_)
+		for (uint32_t i = 0; i < this->renderFinishedSemaphores_.size(); ++i)
 		{
             VkSemaphoreCreateInfo semaphoreCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
             SUCCESS_OR_LOG(
-                vkCreateSemaphore(device.GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &sem) == VK_SUCCESS,
+                vkCreateSemaphore(device.GetLogicalDeviceHandle(), &semaphoreCI, nullptr, &this->renderFinishedSemaphores_[i]) == VK_SUCCESS,
                 "Failed to create render complete semaphore"
             );
+            core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(this->renderFinishedSemaphores_[i]), ("RenderFinishedSemaphore[" + std::to_string(i) + "]").c_str());
         }
     }
 
@@ -670,7 +722,7 @@ namespace engine::render
 	bool Renderer::BeginFrame(uint32_t windowWidth, uint32_t windowHeight)
 	{
 		auto& device = core::Device::Instance();
-		bool multiSampling = core::Device::Instance().GetSetting().multiSampling_;
+		bool multiSampling = this->rendererDescription_.multiSampling_;
 
 		if (windowWidth == 0 || windowHeight == 0)
 		{
@@ -712,6 +764,37 @@ namespace engine::render
 			"Renderer: Failed to wait for fences."
 		);
 
+		// Fence 已确认该 FrameContext 上一轮提交的 GPU 工作全部完成，此时可安全读取其 timestamp 结果
+		// 第一帧（或该 FrameContext 尚未提交过）时 query 从未被 reset，必须跳过读取
+		if (this->timestampQuerySupported_ && frameContext.hasSubmittedFrame_)
+		{
+			// 只读取实际写入的 query（FrameStart 1 个 + 每个 Pass 2 个），不要读取预留但未写入的槽位
+			const uint32_t queryCountToRead = std::min<uint32_t>(kGpuQueryCount, 1 + static_cast<uint32_t>(this->renderPasses_.size()) * 2);
+			uint64_t timestamps[kGpuQueryCount] = {};
+			VkResult queryResult = vkGetQueryPoolResults(
+				device.GetLogicalDeviceHandle(),
+				frameContext.queryPool_,
+				0,
+				queryCountToRead,
+				sizeof(timestamps),
+				timestamps,
+				sizeof(uint64_t),
+				VK_QUERY_RESULT_64_BIT
+			);
+
+			// 布局：[0]=FrameStart [1]=Pass0开始 [2]=Pass0结束 [3]=Pass1开始 [4]=Pass1结束 ...
+			// 帧总耗时 = 最后一个 Pass 结束 - 帧开始；单个 Pass 耗时 = 结束 - 开始
+			if (queryResult == VK_SUCCESS && timestamps[queryCountToRead - 1] > timestamps[0])
+			{
+				const float periodNs = this->timestampPeriod_;
+				const uint64_t frameEnd = timestamps[queryCountToRead - 1];
+				this->lastGpuTimings_.frameTotalMs = static_cast<float>(frameEnd - timestamps[0]) * periodNs / 1000000.0f;
+				this->lastGpuTimings_.skyboxMs    = static_cast<float>(timestamps[2] - timestamps[1]) * periodNs / 1000000.0f;
+				this->lastGpuTimings_.pbrMs       = static_cast<float>(timestamps[4] - timestamps[3]) * periodNs / 1000000.0f;
+				this->lastGpuTimings_.valid       = true;
+			}
+		}
+
 		VkResult acquire = this->swapChain_.AcquireNextImage(frameContext.imageAvailableSemaphore_, &this->imageIndex_);
 		if ((acquire == VK_ERROR_OUT_OF_DATE_KHR))
 		{
@@ -746,7 +829,8 @@ namespace engine::render
 			clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
 			clearValues[2].depthStencil = { 1.0f, 0 };
 		}
-		else {
+		else 
+		{
 			clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
 			clearValues[1].depthStencil = { 1.0f, 0 };
 		}
@@ -764,12 +848,35 @@ namespace engine::render
 
 		this->currentCB_ = frameContext.commandBuffer_;
 
-		SUCCESS_OR_LOG(
-			vkBeginCommandBuffer(this->currentCB_, &cmdBufferBeginInfo) == VK_SUCCESS,
-			"Renderer: Failed to begin command buffer."
-		);
+		vkBeginCommandBuffer(this->currentCB_, &cmdBufferBeginInfo);
+
+		// vkCmdResetQueryPool 禁止在 render pass 内部调用（VUID-vkCmdResetQueryPool-renderpass），必须放在 BeginRenderPass 之前
+		if (this->timestampQuerySupported_)
+		{
+			vkCmdResetQueryPool(this->currentCB_, frameContext.queryPool_, 0, kGpuQueryCount);
+		}
+
+		static auto beginLabel = core::Device::Instance().GetCmdBeginDebugUtilsLabel();
+
+		if (beginLabel) 
+		{
+			VkDebugUtilsLabelEXT labelInfo{};
+			labelInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+			labelInfo.pLabelName = "Renderer Begin Frame";
+			labelInfo.color[0] = 1.0f;
+			labelInfo.color[1] = 1.0f;
+			labelInfo.color[2] = 1.0f;
+			labelInfo.color[3] = 1.0f;
+			beginLabel(this->currentCB_, &labelInfo);
+		}
 
 		vkCmdBeginRenderPass(this->currentCB_, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		// 记录帧起点（vkCmdWriteTimestamp 允许在 render pass 内部使用）
+		if (this->timestampQuerySupported_)
+		{
+			vkCmdWriteTimestamp(this->currentCB_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frameContext.queryPool_, 0);
+		}
 
 		VkViewport viewport{};
 		viewport.width = (float)extent.width;
@@ -787,9 +894,24 @@ namespace engine::render
 
 	void Renderer::Render()
 	{
+		auto& frameContext = this->frameContexts_[this->frameIndex_];
+		uint32_t queryIndex = 1;
+
 		for (auto& renderPass : this->renderPasses_) 
 		{
+			if (this->timestampQuerySupported_)
+			{
+				vkCmdWriteTimestamp(this->currentCB_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frameContext.queryPool_, queryIndex);
+			}
+
 			renderPass->Execute(currentCB_, this->frameIndex_);
+
+			if (this->timestampQuerySupported_)
+			{
+				// 每个 Pass 消耗 2 个 query：[n]=开始 [n+1]=结束
+				vkCmdWriteTimestamp(this->currentCB_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frameContext.queryPool_, queryIndex + 1);
+				queryIndex += 2;
+			}
 		}
 	}
 
@@ -808,6 +930,12 @@ namespace engine::render
 	{
 		auto queue = core::Device::Instance().GetGraphicsQueue();
 		auto& frameContext = this->frameContexts_[this->frameIndex_];
+
+		static auto endLabel = core::Device::Instance().GetCmdEndDebugUtilsLabel();
+		if (endLabel)
+		{
+			endLabel(this->currentCB_);
+		}
 
 		vkCmdEndRenderPass(this->currentCB_);
 
@@ -852,6 +980,9 @@ namespace engine::render
 			return;
 		}
 
+		// 该 FrameContext 已成功提交并展示一帧，下一轮 BeginFrame 才能读取其 timestamp 结果
+		frameContext.hasSubmittedFrame_ = true;
+
 		if (!this->paused_) {
 			if ((*(this->controller.animate)) && (this->scene_->sceneObjects_[0].model->GetAnimations().size() > 0)) {
 				*(this->controller.animationTimer) += *(this->controller.frameTimer);
@@ -881,6 +1012,11 @@ namespace engine::render
 		return this->currentCB_;
 	}
 
+    GpuTimings Renderer::GetGpuTimings()
+    {
+        return this->lastGpuTimings_;
+    }
+
     Renderer::~Renderer()
     {
         this->Destroy();
@@ -892,17 +1028,20 @@ namespace engine::render
 
         vkDeviceWaitIdle(device.GetLogicalDeviceHandle());
 
-        if (this->descriptorPool_ != VK_NULL_HANDLE) {
+        if (this->descriptorPool_ != VK_NULL_HANDLE) 
+		{
             vkDestroyDescriptorPool(device.GetLogicalDeviceHandle(), this->descriptorPool_, nullptr);
             this->descriptorPool_ = VK_NULL_HANDLE;
         }
 
-        if (this->pipelineCache_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineCache(device.GetLogicalDeviceHandle(), this->pipelineCache_, nullptr);
+        if (this->pipelineCache_ != VK_NULL_HANDLE) 
+		{
+			vkDestroyPipelineCache(device.GetLogicalDeviceHandle(), this->pipelineCache_, nullptr);
             this->pipelineCache_ = VK_NULL_HANDLE;
         }
 
-        for (auto& sem : this->renderFinishedSemaphores_) {
+        for (auto& sem : this->renderFinishedSemaphores_) 
+		{
             if (sem != VK_NULL_HANDLE) {
                 vkDestroySemaphore(device.GetLogicalDeviceHandle(), sem, nullptr);
                 sem = VK_NULL_HANDLE;
@@ -911,7 +1050,8 @@ namespace engine::render
 
 		this->DestroyFrameContexts();
 
-        if (this->commandPool_ != VK_NULL_HANDLE) {
+        if (this->commandPool_ != VK_NULL_HANDLE) 
+		{
             vkDestroyCommandPool(device.GetLogicalDeviceHandle(), this->commandPool_, nullptr);
             this->commandPool_ = VK_NULL_HANDLE;
         }
@@ -963,6 +1103,12 @@ namespace engine::render
 			{
 				vkDestroySemaphore(core::Device::Instance().GetLogicalDeviceHandle(), frameContext.imageAvailableSemaphore_, nullptr);
 				frameContext.imageAvailableSemaphore_ = VK_NULL_HANDLE;
+			}
+
+			if (frameContext.queryPool_ != VK_NULL_HANDLE)
+			{
+				vkDestroyQueryPool(core::Device::Instance().GetLogicalDeviceHandle(), frameContext.queryPool_, nullptr);
+				frameContext.queryPool_ = VK_NULL_HANDLE;
 			}
 		}
 		this->frameContexts_.clear();

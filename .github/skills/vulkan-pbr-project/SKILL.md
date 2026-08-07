@@ -214,41 +214,37 @@ SUCCESS_OR_LOG(
 - 修改前先检查 `git status` 和实际 diff。用户可能同时在 VS Code 编辑文件；遇到“磁盘内容更新”冲突时暂停修改，禁止覆盖用户未保存缓冲区。
 - Commit、Push、Tag 继续视为三个独立动作。实际阶段 tag 采用用户选择的短名称；Stage 0/1 已使用 `stage-0`、`stage-1`。
 
-## 当前交接状态（2026-08-06）
+## 当前交接状态（2026-08-07）
 
 ### Git 状态
 
 - `stage-0` 指向 `ead68b1`，已推送。
-- `stage-1` 指向 `160b872`，已推送；`origin/main` 当前也停在该提交。
-- `7d1bd16 Clean up core header formatting` 是本地提交，尚未推送。
-- 工作区存在未提交修改：`engine/core/device.h/.cpp`、`engine/render/render_pass.cpp`、`engine/render/renderer.cpp`。必须保留并基于实际 diff 继续，不要还原或覆盖。
-- `renderer.cpp` 主要是用户的花括号/排版调整，不属于 Debug Utils 功能；提交前单独检查 trailing whitespace 和混合缩进。
+- `stage-1` 指向 `160b872`，已推送。
+- `stage-2` 指向 `4e5ae83`，已推送；`origin/main` 已更新到该提交。
+- 工作区无未提交修改（`imgui.ini` 为运行时生成文件，已还原）。
 
-### Stage 2 分步顺序
+### Stage 2 已完成（GPU 可观测性）
 
-按以下顺序逐步实现，每个小步运行通过后再继续：
+1. Debug Messenger：`VK_EXT_debug_utils` 替换 `VK_EXT_debug_report`。
+2. Object Naming：`Device::SetObjectName()`，命名 CommandPool/PipelineCache/RenderPass/CB/Fence/Semaphore/Framebuffer/QueryPool；resize 后重建对象重新命名。
+3. Pass Label：Main Frame / Skybox / PBR 三段标签。
+4. Timestamp Query：每 FrameContext 一个 QueryPool（`kGpuQueryCount = 1 + 8*2`），Render() 中 Pass 前后写 timestamp，Fence 确认后安全读取。
+5. ImGui：右上角 GPU Timings 面板显示 Frame/Skybox/PBR 耗时。
 
-1. Debug Messenger：用 `VK_EXT_debug_utils` 替换 `VK_EXT_debug_report`。
-2. Object Naming：加载 `vkSetDebugUtilsObjectNameEXT`，给关键 Vulkan 对象命名。
-3. Pass Label：为 Main Frame、Skybox、PBR 添加 CommandBuffer Label。
-4. Timestamp Query：按 FrameContext 分配查询区间，只读取已由 Fence 确认完成的帧。
-5. ImGui：显示最近完成帧的 GPU Frame/Skybox/PBR 时间。
+### Stage 2 踩坑记录（重要）
 
-当前第 1 步已经实现并通过编译、运行：
+- **`vkResetQueryPool` 是 Vulkan 1.2 函数**，本工程 `apiVersion = VK_API_VERSION_1_0`，直接调用会因函数指针为 null 闪退。只用 `vkCmdResetQueryPool`（1.0）。
+- **`vkCmdResetQueryPool` 禁止在 render pass 内部调用**（VUID-vkCmdResetQueryPool-renderpass），必须放在 `vkCmdBeginRenderPass` 之前。
+- **`vkGetQueryPoolResults` 无 WAIT_BIT 时，请求范围内任一 query 未写入 → 整体返回 `VK_NOT_READY`**。只读取实际写入的 query 数（`1 + renderPasses_.size()*2`），不要读预留但未写入的槽位。
+- 第一帧读取 query 会报 "query not reset"：用 `FrameContext::hasSubmittedFrame_` 标志，帧提交成功后才允许读取。
+- **MSAA 配置双源问题**：`RendererDescription.multiSampling_` 与 `DeviceSetting.multiSampling_` 独立存在，管线/clearValues 读 Device，RenderPass/Framebuffer 读 RendererDescription。**修复**：Device 为唯一权威源，`Renderer::Init()` 开头 `rendererDescription_.multiSampling_ = Device::GetSetting().multiSampling_`。
+- **`rasterizationSamples` 必须有 else 分支**：MSAA 关闭时 `if (multiSampling_)` 不成立 → 值为 0 → VUID 错误。SkyBox/PBR/UI 三处管线均改为三元表达式 `msaa ? sampleCount_ : VK_SAMPLE_COUNT_1_BIT`。
+- **`RendererDescription.enableValidation_` 是死字段**：从未被读取，validation 只由 `DeviceSetting.validation_` 控制。已删除。
+- **`params_.prefilteredCubeMipLevels` 从未被赋值**：导致 shader 中 `lod = roughness * prefilteredCubeMipLevels` 使用垃圾值，roughness 大时 specular IBL 明显错误。修复：`Scene::Init()` 中 `LoadAsset()` 后从 `cubeMap_->GetPrefilteredCubeMipLevels()` 填入。
 
-- Debug Messenger 创建成功，Validation Layer 正常加载。
-- Error/Warning/Info 已映射到 `LOG_ERROR`、`LOG_WARN`、`LOG_INFO`。
-- 订阅 `INFO_BIT` 会输出大量 Vulkan Loader 和 NVIDIA implicit layer 信息；这些不是错误。若用户不希望刷屏，只保留 Warning 和 Error。
-- `VK_LAYER_NV_present`、`VK_LAYER_NV_optimus` 是 NVIDIA 驱动隐式层，属于正常信息。
-- Validation 曾报告 Skybox Pipeline 提供 location 3–6、但 Shader 不消费。用户已把 Skybox 顶点输入缩减为 location 0–2；需要在下一窗口重新构建运行，确认警告消失。
+### 下一步：Stage 3A（Resource Handle）
 
-下一步从 Object Naming 开始，不要重新迁移 Debug Messenger。先在 `Device` 中加载 `PFN_vkSetDebugUtilsObjectNameEXT`：Debug Messenger 依赖 Instance，对象命名函数依赖 LogicalDevice，因此必须在 `CreateLogicDevice()` 成功后加载。提供无副作用、不可用时直接 no-op 的 `SetObjectName(VkObjectType, uint64_t, const char*)`，第一批只命名：
-
-- Renderer CommandPool、PipelineCache、MainRenderPass。
-- 每个 FrameContext 的 CommandBuffer、Fence、imageAvailable。
-- 每个 swapchain image 的 renderFinished 和 MainFramebuffer。
-
-FrameContext 对象只在初始化时命名；Framebuffer、per-image attachment 和 renderFinished 在 resize 后得到新句柄，必须重新命名。第一版不要创建独立 `DebugUtils` 类，也不要提前加入 Label 或 Timestamp。
+强类型 Handle、index + generation、资源状态查询。开始前先检查工作区、最新 Tag 和上一阶段验收结果，给出具体方案供用户审查后再动手。
 
 ## 构建系统
 - 构建工具：CMake + Ninja

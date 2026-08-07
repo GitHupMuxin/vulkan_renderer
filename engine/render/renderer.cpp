@@ -984,13 +984,15 @@ namespace engine::render
 		frameContext.hasSubmittedFrame_ = true;
 
 		if (!this->paused_) {
-			if ((*(this->controller.animate)) && (this->scene_->sceneObjects_[0].model->GetAnimations().size() > 0)) {
+			// 通过 Scene 便捷方法解析 model（handle 校验），失效则跳过动画更新
+			resource::Model* animModel = this->scene_->GetModelAt(0);
+			if ((*(this->controller.animate)) && animModel != nullptr && animModel->GetAnimations().size() > 0) {
 				*(this->controller.animationTimer) += *(this->controller.frameTimer);
-				if (*(this->controller.animationTimer) > this->scene_->sceneObjects_[0].model->GetAnimations()[*(this->controller.animationIndex)].end) {
-					*(this->controller.animationTimer) -= this->scene_->sceneObjects_[0].model->GetAnimations()[*(this->controller.animationIndex)].end;
+				if (*(this->controller.animationTimer) > animModel->GetAnimations()[*(this->controller.animationIndex)].end) {
+					*(this->controller.animationTimer) -= animModel->GetAnimations()[*(this->controller.animationIndex)].end;
 				}
-				this->scene_->sceneObjects_[0].model->UpdateAnimation(*(this->controller.animationIndex), *(this->controller.animationTimer));
-				this->scene_->sceneObjects_[0].model->UpdateMeshDataBuffer(this->frameIndex_);
+				animModel->UpdateAnimation(*(this->controller.animationIndex), *(this->controller.animationTimer));
+				animModel->UpdateMeshDataBuffer(this->frameIndex_);
 			}
 		}
 

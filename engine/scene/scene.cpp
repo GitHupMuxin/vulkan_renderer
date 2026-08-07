@@ -7,7 +7,7 @@ namespace engine::scene
 {
 
 
-    void Scene::Init()
+    void Scene::Init(const SceneDescription& desc)
     {
         LOG_INFO("Scene: start to init scene...");
         auto& device = core::Device::Instance();
@@ -23,17 +23,33 @@ namespace engine::scene
             this->MatricesUBOBuffers_[i].Create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, sizeof(this->UBOMatrices_));
         }
 
-        this->LoadAsset();
+        this->LoadAsset(desc);
 
         // prefiltered cube map 的 mip 层数由生成阶段决定（numMips），
         // shader 用它计算 specular IBL 的 textureLod 层级，
         // 必须从生成好的环境贴图查询，否则未初始化导致 lod 越界
-        if (this->cubeMap_ != nullptr)
+        if (auto* cubeMap = this->GetCubeMap())
         {
-            this->params_.prefilteredCubeMipLevels = static_cast<float>(this->cubeMap_->GetPrefilteredCubeMipLevels());
+            this->params_.prefilteredCubeMipLevels = static_cast<float>(cubeMap->GetPrefilteredCubeMipLevels());
         }
 
         this->UpdateUniformData(0);
+
+        // Handle 失效自检：加载一个临时模型 → 释放 → 应返回 nullptr。
+        // 纯 CPU 操作，不进入渲染热路径，不碰场景已有资源。
+        {
+            auto& rm = resource::ResourceManager::Instance();
+            resource::ModelHandle probe = rm.LoadModel(rm.assetPath_ + "models/Box/glTF-Embedded/Box.gltf");
+            rm.ReleaseModel(probe);
+            if (rm.GetModel(probe) == nullptr)
+            {
+                LOG_INFO("Resource handle invalidation self-check PASSED");
+            }
+            else
+            {
+                LOG_ERROR("Resource handle invalidation self-check FAILED");
+            }
+        }
     }
 
     void Scene::UpdateUniformData(uint32_t frameIndex)
@@ -69,24 +85,41 @@ namespace engine::scene
 	}
 
 
-    void Scene::LoadAsset()
+    void Scene::LoadAsset(const SceneDescription& desc)
     {
         LOG_INFO("Scene: start to load assets...");
-        // this->AddObject(resource::ResourceManager::Instance().usageModel_.get());
-        for (int i = 0; i < resource::ResourceManager::Instance().modelArray_.size(); i++)
+        auto& rm = resource::ResourceManager::Instance();
+
+        // 按 SceneDescription 加载用户资产，而非默认获取全部资源
+        for (const auto& path : desc.modelPaths)
         {
-            this->AddObject(resource::ResourceManager::Instance().GetModelInstance(i));
+            resource::ModelHandle handle = rm.LoadModel(rm.assetPath_ + path);
+            this->AddObject(handle);
         }
-        this->skybox_ = resource::ResourceManager::Instance().skybox_.get();
-        this->cubeMap_ = resource::ResourceManager::Instance().GetEnvironmentCubeMap(0);
+
+        // skybox 是系统资源，直接取指针（永存活）
+        this->skybox_ = rm.GetSkybox();
+
+        // 环境贴图是用户资产，存 Handle（可校验/未来可替换）
+        if (!desc.environmentPath.empty())
+        {
+            this->cubeMapHandle_ = rm.LoadSkyBox(rm.assetPath_ + desc.environmentPath);
+        }
     }
 
-    void Scene::AddObject(resource::Model* model, glm::mat4 transform)
+    void Scene::AddObject(resource::ModelHandle modelHandle, glm::mat4 transform)
     {
-        // If the caller didn't provide a transform, compute one that centers the
-        // model's AABB at the origin and scales its longest axis to fit the screen
+        auto& rm = resource::ResourceManager::Instance();
+
+        // 计算默认 transform 需要 model 的 AABB（此时 handle 一定有效，因为刚加载）
         if (transform == glm::mat4(1.0f))
         {
+            resource::Model* model = rm.GetModel(modelHandle);
+            if (model == nullptr)
+            {
+                LOG_WARN("Scene: AddObject called with invalid model handle, skipped.");
+                return;
+            }
             glm::mat4 aabb = model->GetAABBBox();
             glm::vec3 size  = glm::vec3(aabb[0][0], aabb[1][1], aabb[2][2]);
             glm::vec3 min   = glm::vec3(aabb[3][0], aabb[3][1], aabb[3][2]);
@@ -97,7 +130,7 @@ namespace engine::scene
         }
 
         SceneObject object;
-        object.model = model;
+        object.modelHandle = modelHandle;
         object.transform = transform;
         this->sceneObjects_.emplace_back(object);
     }
@@ -119,6 +152,25 @@ namespace engine::scene
     Camera* Scene::GetCamera()
     {
         return this->camera_;
+    }
+
+    resource::Model* Scene::GetModelAt(size_t index)
+    {
+        if (index >= this->sceneObjects_.size())
+        {
+            return nullptr;
+        }
+        return resource::ResourceManager::Instance().GetModel(this->sceneObjects_[index].modelHandle);
+    }
+
+    size_t Scene::GetModelCount() const
+    {
+        return this->sceneObjects_.size();
+    }
+
+    resource::EnvironmentCubeMap* Scene::GetCubeMap()
+    {
+        return resource::ResourceManager::Instance().GetEnvironmentCubeMap(this->cubeMapHandle_);
     }
     
 

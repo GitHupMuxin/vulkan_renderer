@@ -95,7 +95,7 @@ namespace engine::render
 			writeDescriptorSets[2].descriptorCount = 1;
 			writeDescriptorSets[2].dstSet = this->descriptorSets_[i].skybox;
 			writeDescriptorSets[2].dstBinding = 2;
-			writeDescriptorSets[2].pImageInfo = &this->initInfo_.scene_->cubeMap_->prefilteredCube_.descriptor_;
+			writeDescriptorSets[2].pImageInfo = &this->initInfo_.scene_->GetCubeMap()->prefilteredCube_.descriptor_;
 
 			vkUpdateDescriptorSets(device.GetLogicalDeviceHandle(), static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
 		}
@@ -404,14 +404,14 @@ namespace engine::render
 				writeDescriptorSets[2].descriptorCount = 1;
 				writeDescriptorSets[2].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[2].dstBinding = 2;
-				writeDescriptorSets[2].pImageInfo = &this->initInfo_.scene_->cubeMap_->irradianceCube_.descriptor_;
+				writeDescriptorSets[2].pImageInfo = &this->initInfo_.scene_->GetCubeMap()->irradianceCube_.descriptor_;
 
 				writeDescriptorSets[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				writeDescriptorSets[3].descriptorCount = 1;
 				writeDescriptorSets[3].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[3].dstBinding = 3;
-				writeDescriptorSets[3].pImageInfo = &this->initInfo_.scene_->cubeMap_->prefilteredCube_.descriptor_;
+				writeDescriptorSets[3].pImageInfo = &this->initInfo_.scene_->GetCubeMap()->prefilteredCube_.descriptor_;
 
 				writeDescriptorSets[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -493,9 +493,14 @@ namespace engine::render
 		}
 
 		// Descriptor sets are *instances* -> one set of descriptors per model
-		for (auto& sceneObject : this->initInfo_.scene_->sceneObjects_)
+		auto* scene = this->initInfo_.scene_;
+		for (size_t si = 0; si < scene->GetModelCount(); ++si)
 		{
-			resource::Model* model = sceneObject.model;
+			resource::Model* model = scene->GetModelAt(si);
+			if (model == nullptr)
+			{
+				continue;
+			}
 
 			// Material (samplers) — set=1
 			{
@@ -844,7 +849,7 @@ namespace engine::render
 	{
 	    auto& device = core::Device::Instance();
 		uint32_t frameCount = device.GetSetting().frameCount_;
-		auto& sceneObjects = this->initInfo_.scene_->sceneObjects_;
+		auto* scene = this->initInfo_.scene_;
 
 		// set=0 (scene): one set per frame, each holding 2 UBO + 5 samplers
 		uint32_t uniformBufferCount = 2 * frameCount;
@@ -853,9 +858,13 @@ namespace engine::render
 
 		uint32_t storageBufferCount = 0;
 
-		for (auto& sceneObject : sceneObjects)
+		for (size_t i = 0; i < scene->GetModelCount(); ++i)
 		{
-			resource::Model* model = sceneObject.model;
+			resource::Model* model = scene->GetModelAt(i);
+			if (model == nullptr)
+			{
+				continue;
+			}
 			uint32_t materialCount = model->GetMaterialCount();
 
 			// set=1 (material): one set per material, each holding 5 samplers
@@ -930,12 +939,16 @@ namespace engine::render
 		}
 
 		VkDeviceSize offsets[1] = { 0 };
-		auto& sceneObjects = this->initInfo_.scene_->sceneObjects_;
+		auto* scene = this->initInfo_.scene_;
 
 		this->boundPipeline_ = VK_NULL_HANDLE;
 
-		for (auto& sceneObject : sceneObjects) {
-			resource::Model* model = sceneObject.model;
+		for (size_t i = 0; i < scene->GetModelCount(); ++i) {
+			resource::Model* model = scene->GetModelAt(i);
+			if (model == nullptr)
+			{
+				continue;
+			}
 			// 每个 model 绑定自己的 VBO/IBO
 			VkBuffer vbo = model->GetVertexBuffer();
 			vkCmdBindVertexBuffers(currentCB, 0, 1, &vbo, offsets);

@@ -79,7 +79,16 @@ namespace app
     {
         LOG_INFO("Application: start to init scene...");
         this->scene_.SetCamera(&this->camera_);
-        this->scene_.Init();
+
+        // 场景描述：声明要加载哪些资源（相对 data/ 的路径）
+        engine::scene::SceneDescription desc;
+        desc.modelPaths = {
+            "models/DamagedHelmet/glTF-Embedded/DamagedHelmet.gltf",
+            "models/MetalRoughSpheres/glTF-Embedded/MetalRoughSpheres.gltf"
+        };
+        desc.environmentPath = "environments/papermill.ktx";
+
+        this->scene_.Init(desc);
     }
 
     void Application::SetUpUI()
@@ -113,8 +122,11 @@ namespace app
 
 		ImGui::NewFrame();
 
+		// 通过 Scene 便捷方法解析第一个 model（handle 校验），UI 多处复用
+		engine::resource::Model* primaryModel = this->scene_.GetModelAt(0);
+
 		ImGui::SetNextWindowPos(ImVec2(10, 10));
-		ImGui::SetNextWindowSize(ImVec2(200 * scale, (this->scene_.sceneObjects_[0].model->GetAnimations().size() > 0 ? 500 : 420) * scale), ImGuiSetCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(200 * scale, (primaryModel != nullptr && primaryModel->GetAnimations().size() > 0 ? 500 : 420) * scale), ImGuiSetCond_Always);
 		ImGui::Begin("Vulkan glTF 2.0 PBR", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 		ImGui::PushItemWidth(100.0f * scale);
 
@@ -209,11 +221,11 @@ namespace app
 			}
 		}
 
-		if (this->scene_.sceneObjects_[0].model->GetAnimations().size() > 0) {
+		if (primaryModel != nullptr && primaryModel->GetAnimations().size() > 0) {
 			if (ui_->Header("Animations")) {
 				ui_->Checkbox("Animate", &animate);
 				std::vector<std::string> animationNames;
-				for (auto animation : this->scene_.sceneObjects_[0].model->GetAnimations()) {
+				for (auto animation : primaryModel->GetAnimations()) {
 					animationNames.push_back(animation.name);
 				}
 				ui_->Combo("Animation", &animationIndex, animationNames);

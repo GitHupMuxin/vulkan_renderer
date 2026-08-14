@@ -105,6 +105,9 @@ else()
 	add_compile_definitions(VK_EXAMPLE_DATA_DIR="${CMAKE_SOURCE_DIR}/data/")
 endif()
 
+# 日志输出目录：统一写到项目根目录（不依赖运行时工作目录）
+add_compile_definitions(VK_LOG_DIR="${CMAKE_SOURCE_DIR}/")
+
 # Compiler specific stuff
 IF(MSVC)
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")

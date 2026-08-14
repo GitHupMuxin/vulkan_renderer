@@ -772,7 +772,11 @@ namespace engine::render
 			"Renderer: Failed to wait for fences."
 		);
 
-		// Fence 已确认该 FrameContext 上一轮提交的 GPU 工作全部完成，此时可安全读取其 timestamp 结果
+		// Fence 已确认该 FrameContext 上一轮提交的 GPU 工作全部完成：
+		// 1) 此时可安全读取其 timestamp 结果
+		// 2) 通知资源管理器推进帧号，清理到期的延迟删除资源（GPU 已不再使用它们）
+		resource::ResourceManager::Instance().OnFrameCompleted();
+
 		// 第一帧（或该 FrameContext 尚未提交过）时 query 从未被 reset，必须跳过读取
 		if (this->timestampQuerySupported_ && frameContext.hasSubmittedFrame_)
 		{

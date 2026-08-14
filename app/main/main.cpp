@@ -1,3 +1,4 @@
+#include <string>
 #include <memory>
 #include "app/application/application.h"
 
@@ -12,10 +13,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-	static std::ofstream errLog("error.log");
+	// 日志统一写到 exe 旁（VK_LOG_DIR 由 CMake 注入，不依赖运行时工作目录）
+	static std::ofstream errLog(std::string(VK_LOG_DIR) + "error.log");
 	std::cerr.rdbuf(errLog.rdbuf());
 
-	static std::ofstream outLog("output.log");
+	static std::ofstream outLog(std::string(VK_LOG_DIR) + "output.log");
 	std::cout.rdbuf(outLog.rdbuf());
 
 	application->SetArgs(__argc, __argv);

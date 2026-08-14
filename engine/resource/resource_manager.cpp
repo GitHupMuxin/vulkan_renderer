@@ -13,9 +13,25 @@ namespace engine::resource
         return instance;
     }
 
+    ResourceManager::~ResourceManager()
+    {
+        // 析构时强制清空所有资源（无需等待 GPU，因为 Device 会先于单例析构做 vkDeviceWaitIdle）
+        for (auto& slot : this->modelSlots_)
+        {
+            slot.resource.reset();
+        }
+        for (auto& slot : this->envSlots_)
+        {
+            slot.resource.reset();
+        }
+        this->pendingDeletions_.clear();
+    }
+
     void ResourceManager::Init()
     {
         LOG_INFO("ResourceManager: start to init resource manager...");
+        // 延迟删除需要知道帧缓冲数（retireFrame = 当前帧 + frameCount 保证 in-flight 帧都完成）
+        this->frameCount_ = core::Device::Instance().GetSetting().frameCount_;
         std::string skyboxFile = ResourceManager::assetPath_ + "models/Box/glTF-Embedded/Box.gltf";
         std::string emptyTexture2DFile = this->assetPath_ + "textures/empty.ktx";
 
@@ -34,90 +50,133 @@ namespace engine::resource
 
     Model* ResourceManager::GetModel(ModelHandle handle)
     {
-        if (handle.index >= this->modelsPool_.size())
+        if (handle.index >= this->modelSlots_.size())
         {
             return nullptr;
         }
-        if (!this->modelsAlive_[handle.index])
+        auto& slot = this->modelSlots_[handle.index];
+        if (slot.state != ResourceState::Ready)
         {
             return nullptr;
         }
-        if (this->modelsGeneration_[handle.index] != handle.generation)
+        if (slot.generation != handle.generation)
         {
             return nullptr;
         }
-        return this->modelsPool_[handle.index].get();
+        return slot.resource.get();
     }
 
     EnvironmentCubeMap* ResourceManager::GetEnvironmentCubeMap(EnvironmentCubeMapHandle handle)
     {
-        if (handle.index >= this->envCubeMapsPool_.size())
+        if (handle.index >= this->envSlots_.size())
         {
             return nullptr;
         }
-        if (!this->envCubeMapAlive_[handle.index])
+        auto& slot = this->envSlots_[handle.index];
+        if (slot.state != ResourceState::Ready)
         {
             return nullptr;
         }
-        if (this->envCubeMapGeneration_[handle.index] != handle.generation)
+        if (slot.generation != handle.generation)
         {
             return nullptr;
         }
-        return this->envCubeMapsPool_[handle.index].get();
+        return slot.resource.get();
     }
 
     bool ResourceManager::IsModelAlive(ModelHandle handle) const
     {
-        return handle.index < this->modelsPool_.size()
-            && this->modelsAlive_[handle.index]
-            && this->modelsGeneration_[handle.index] == handle.generation;
+        return handle.index < this->modelSlots_.size()
+            && this->modelSlots_[handle.index].state == ResourceState::Ready
+            && this->modelSlots_[handle.index].generation == handle.generation;
     }
 
     bool ResourceManager::IsEnvironmentAlive(EnvironmentCubeMapHandle handle) const
     {
-        return handle.index < this->envCubeMapsPool_.size()
-            && this->envCubeMapAlive_[handle.index]
-            && this->envCubeMapGeneration_[handle.index] == handle.generation;
+        return handle.index < this->envSlots_.size()
+            && this->envSlots_[handle.index].state == ResourceState::Ready
+            && this->envSlots_[handle.index].generation == handle.generation;
     }
 
     uint32_t ResourceManager::GetModelSize() const
     {
-        return static_cast<uint32_t>(this->modelsPool_.size());
+        return static_cast<uint32_t>(this->modelSlots_.size());
     }
 
     uint32_t ResourceManager::GetEnvironmentCubeMapSize() const
     {
-        return static_cast<uint32_t>(this->envCubeMapsPool_.size());
+        return static_cast<uint32_t>(this->envSlots_.size());
     }
 
     void ResourceManager::ReleaseModel(ModelHandle handle)
     {
-        if (handle.index >= this->modelsPool_.size())
+        if (handle.index >= this->modelSlots_.size())
         {
             return;
         }
-        if (!this->modelsAlive_[handle.index])
+        auto& slot = this->modelSlots_[handle.index];
+        if (slot.state != ResourceState::Ready)
         {
             return;
         }
-        this->modelsAlive_[handle.index] = false;
-        this->modelsGeneration_[handle.index]++;
-        this->modelsPool_[handle.index].reset();
+        // ① Handle 立即失效：state→PendingDelete + generation++，旧 handle 无法再取到资源
+        slot.state = ResourceState::PendingDelete;
+        slot.generation++;
+        // ② 不立即 reset()：GPU 可能还在用该模型的 VBO/IBO。
+        //    进待删队列，等 frameCount 帧（保证所有 in-flight 帧完成）后由 OnFrameCompleted 真正销毁
+        this->pendingDeletions_.push_back({
+            handle.index, true, this->currentFrame_ + this->frameCount_
+        });
+        LOG_INFO("ResourceManager: model[" << handle.index << "] queued for deferred delete, retire at frame " << (this->currentFrame_ + this->frameCount_));
     }
 
     void ResourceManager::ReleaseEnvironmentCubeMap(EnvironmentCubeMapHandle handle)
     {
-        if (handle.index >= this->envCubeMapsPool_.size())
+        if (handle.index >= this->envSlots_.size())
         {
             return;
         }
-        if (!this->envCubeMapAlive_[handle.index])
+        auto& slot = this->envSlots_[handle.index];
+        if (slot.state != ResourceState::Ready)
         {
             return;
         }
-        this->envCubeMapAlive_[handle.index] = false;
-        this->envCubeMapGeneration_[handle.index]++;
-        this->envCubeMapsPool_[handle.index].reset();
+        slot.state = ResourceState::PendingDelete;
+        slot.generation++;
+        this->pendingDeletions_.push_back({
+            handle.index, false, this->currentFrame_ + this->frameCount_
+        });
+    }
+
+    void ResourceManager::OnFrameCompleted()
+    {
+        this->currentFrame_++;
+
+        for (auto it = this->pendingDeletions_.begin(); it != this->pendingDeletions_.end(); )
+        {
+            if (it->retireFrame <= this->currentFrame_)
+            {
+                // 到期：该帧的 GPU 工作已确认完成，资源不再被使用，安全销毁
+                if (it->isModel && it->poolIndex < this->modelSlots_.size())
+                {
+                    auto& slot = this->modelSlots_[it->poolIndex];
+                    slot.resource.reset();          // 真正销毁 GPU 资源
+                    slot.state = ResourceState::Free;
+                    LOG_INFO("ResourceManager: model[" << it->poolIndex << "] destroyed at frame " << this->currentFrame_);
+                }
+                else if (!it->isModel && it->poolIndex < this->envSlots_.size())
+                {
+                    auto& slot = this->envSlots_[it->poolIndex];
+                    slot.resource.reset();
+                    slot.state = ResourceState::Free;
+                }
+                it = this->pendingDeletions_.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
     }
 
     // Model* ResourceManager::GetPrototype(SimpleModelType type)
@@ -157,10 +216,12 @@ namespace engine::resource
 		std::cout << "Loading took " << tFileLoad << " ms" << std::endl;
 
         // this->modelArray_.emplace_back(std::move(model));
-        this->modelsPool_.emplace_back(std::move(model));
-        this->modelsGeneration_.emplace_back(0);
-        this->modelsAlive_.emplace_back(true);
-        return ModelHandle{ static_cast<uint32_t>(this->modelsPool_.size() - 1), 0 };
+        ResourceSlot<Model> slot;
+        slot.resource = std::move(model);
+        slot.generation = 0;
+        slot.state = ResourceState::Ready;
+        this->modelSlots_.emplace_back(std::move(slot));
+        return ModelHandle{ static_cast<uint32_t>(this->modelSlots_.size() - 1), 0 };
     }
    
     
@@ -170,10 +231,12 @@ namespace engine::resource
         std::unique_ptr<EnvironmentCubeMap> cubeMap = std::make_unique<EnvironmentCubeMap>();
         // LoadFromFile 内部已调用 GenerateCubemaps，不要重复生成
         cubeMap->LoadFromFile(fileName, VK_FORMAT_R16G16B16A16_SFLOAT);
-        this->envCubeMapsPool_.emplace_back(std::move(cubeMap));
-        this->envCubeMapGeneration_.emplace_back(0);
-        this->envCubeMapAlive_.emplace_back(true);
-        return EnvironmentCubeMapHandle{ static_cast<uint32_t>(this->envCubeMapsPool_.size() - 1), 0 };
+        ResourceSlot<EnvironmentCubeMap> slot;
+        slot.resource = std::move(cubeMap);
+        slot.generation = 0;
+        slot.state = ResourceState::Ready;
+        this->envSlots_.emplace_back(std::move(slot));
+        return EnvironmentCubeMapHandle{ static_cast<uint32_t>(this->envSlots_.size() - 1), 0 };
     }
 
 }

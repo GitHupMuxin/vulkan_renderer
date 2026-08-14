@@ -44,10 +44,13 @@ set(ENGINE_RESOURCE_HEADERS
 set(ENGINE_SCENE_SRC
     "scene/camera.cpp"
     "scene/scene.cpp"
+    "scene/scene_extractor.cpp"
 )
 set(ENGINE_SCENE_HEADERS
     "scene/camera.h"
     "scene/scene.h"
+    "scene/scene_description.h"
+    "scene/scene_extractor.h"
 )
 
 # --- Render ---
@@ -55,11 +58,15 @@ set(ENGINE_RENDER_SRC
     "render/renderer.cpp"
     "render/render_pass.cpp"
     "render/fullscreen_pass.cpp"
+    "render/render_scene.cpp"
+    "render/framebuffer_attachment.cpp"
 )
 set(ENGINE_RENDER_HEADERS
     "render/renderer.h"
     "render/render_pass.h"
     "render/fullscreen_pass.h"
+    "render/render_scene.h"
+    "render/framebuffer_attachment.h"
 )
 
 # --- Platform ---

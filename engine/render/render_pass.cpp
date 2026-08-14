@@ -7,6 +7,36 @@
 namespace engine::render
 {
 
+    // 从 RenderScene 的三个队列收集去重的 model handle（index + generation）
+    static std::vector<resource::ModelHandle> CollectUniqueModels(const RenderScene& renderScene)
+    {
+        std::vector<resource::ModelHandle> handles;
+        auto collect = [&handles](const std::vector<RenderItem>& items)
+        {
+            for (const auto& item : items)
+            {
+                bool found = false;
+                for (const auto& h : handles)
+                {
+                    if (h.index == item.modelHandle.index && h.generation == item.modelHandle.generation)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                {
+                    handles.push_back(item.modelHandle);
+                }
+            }
+        };
+        collect(renderScene.opaqueItems);
+        collect(renderScene.maskedItems);
+        collect(renderScene.transparentItems);
+        return handles;
+    }
+
+
     DescriptorSetCount DescriptorSetCount::operator+(DescriptorSetCount other)
 	{
 		return DescriptorSetCount{
@@ -56,46 +86,47 @@ namespace engine::render
     	descriptorSetLayoutCI.pBindings = bindings.data();
     	descriptorSetLayoutCI.bindingCount = static_cast<uint32_t>(bindings.size());
     	SUCCESS_OR_LOG(
-			vkCreateDescriptorSetLayout(device.GetLogicalDeviceHandle(), &descriptorSetLayoutCI, nullptr, &this->descriptorSetLayouts_.skybox) == VK_SUCCESS,
+			vkCreateDescriptorSetLayout(device.GetLogicalDeviceHandle(), &descriptorSetLayoutCI, nullptr, &this->skyboxLayout_) == VK_SUCCESS,
 			"SkyBoxRenderPass: Failed to create descriptor set layout."
 		);
 
 		// Skybox (fixed set)
-		for (auto i = 0; i < this->descriptorSets_.size(); i++) 
+		for (auto i = 0; i < this->skyboxSets_.size(); i++) 
 		{
 			VkDescriptorSetAllocateInfo descriptorSetAllocInfo{};
 			descriptorSetAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 			descriptorSetAllocInfo.descriptorPool = descriptorPool;
-			descriptorSetAllocInfo.pSetLayouts = &this->descriptorSetLayouts_.skybox;
+			descriptorSetAllocInfo.pSetLayouts = &this->skyboxLayout_;
 			descriptorSetAllocInfo.descriptorSetCount = 1;
 
 			SUCCESS_OR_LOG(
-				vkAllocateDescriptorSets(device.GetLogicalDeviceHandle(), &descriptorSetAllocInfo, &this->descriptorSets_[i].skybox) == VK_SUCCESS,
+				vkAllocateDescriptorSets(device.GetLogicalDeviceHandle(), &descriptorSetAllocInfo, &this->skyboxSets_[i]) == VK_SUCCESS,
 				"SkyBoxRenderPass: Failed to allocate descriptor sets."
 			);
 
 			std::array<VkWriteDescriptorSet, 3> writeDescriptorSets{};
 
+			// binding=0：相机矩阵 UBO（Renderer 共享 matricesUBO，布局 UBOMatricesUpload）
 			writeDescriptorSets[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writeDescriptorSets[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			writeDescriptorSets[0].descriptorCount = 1;
-			writeDescriptorSets[0].dstSet = this->descriptorSets_[i].skybox;
+			writeDescriptorSets[0].dstSet = this->skyboxSets_[i];
 			writeDescriptorSets[0].dstBinding = 0;
-			writeDescriptorSets[0].pBufferInfo = &this->matricesUBOBuffer_[i].descriptor;
+			writeDescriptorSets[0].pBufferInfo = &(*this->initInfo_.matricesUBOBuffers_)[i].descriptor;
 
 			writeDescriptorSets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writeDescriptorSets[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			writeDescriptorSets[1].descriptorCount = 1;
-			writeDescriptorSets[1].dstSet = this->descriptorSets_[i].skybox;
+			writeDescriptorSets[1].dstSet = this->skyboxSets_[i];
 			writeDescriptorSets[1].dstBinding = 1;
-			writeDescriptorSets[1].pBufferInfo = &this->initInfo_.scene_->ParamsUBOBuffers_[i].descriptor;
+			writeDescriptorSets[1].pBufferInfo = &(*this->initInfo_.paramsUBOBuffers_)[i].descriptor;
 
 			writeDescriptorSets[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writeDescriptorSets[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			writeDescriptorSets[2].descriptorCount = 1;
-			writeDescriptorSets[2].dstSet = this->descriptorSets_[i].skybox;
+			writeDescriptorSets[2].dstSet = this->skyboxSets_[i];
 			writeDescriptorSets[2].dstBinding = 2;
-			writeDescriptorSets[2].pImageInfo = &this->initInfo_.scene_->GetCubeMap()->prefilteredCube_.descriptor_;
+			writeDescriptorSets[2].pImageInfo = &resource::ResourceManager::Instance().GetEnvironmentCubeMap(this->initInfo_.renderScene_->environment.environmentCubeMap)->prefilteredCube_.descriptor_;
 
 			vkUpdateDescriptorSets(device.GetLogicalDeviceHandle(), static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
 		}
@@ -158,7 +189,7 @@ namespace engine::render
 		// Pipeline layout (created once, shared by all pipeline sets)
 		if (this->pipelineLayout_ == VK_NULL_HANDLE) {
 			const std::vector<VkDescriptorSetLayout> setLayouts = {
-				this->descriptorSetLayouts_.skybox
+				this->skyboxLayout_
 			};
 			VkPipelineLayoutCreateInfo pipelineLayoutCI{};
 			pipelineLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -224,11 +255,11 @@ namespace engine::render
 	SkyBoxRenderPass::SkyBoxRenderPass()
 	{
 		uint32_t frameCount = core::Device::Instance().GetSetting().frameCount_;
+		this->skyboxSets_.resize(frameCount);
 		this->matricesUBOBuffer_.resize(frameCount);
-		this->descriptorSets_.resize(frameCount);
 
 		for (int i = 0; i < this->matricesUBOBuffer_.size(); i++)
-			this->matricesUBOBuffer_[i].Create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, sizeof(this->matrices_));
+			this->matricesUBOBuffer_[i].Create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, sizeof(UBOMatricesUpload));
 	}
 
 	SkyBoxRenderPass::~SkyBoxRenderPass()
@@ -238,12 +269,12 @@ namespace engine::render
 
     void SkyBoxRenderPass::UpdateUniformData(uint32_t frameIndex) 
 	{
-		auto& device = core::Device::Instance();
-		this->matrices_.projection = this->initInfo_.scene_->GetCamera()->matrices_.perspective_;
-		this->matrices_.view = this->initInfo_.scene_->GetCamera()->matrices_.view_;
-		this->matrices_.model = glm::mat4(glm::mat3(this->initInfo_.scene_->GetCamera()->matrices_.view_));
+		UBOMatricesUpload matrices;
+		matrices.projection = this->initInfo_.renderScene_->camera.projection;
+		// skybox 的 model = mat3(view)：保持相机旋转，去掉平移（天空盒跟随视角但不移动）
+		matrices.model = glm::mat4(glm::mat3(this->initInfo_.renderScene_->camera.view));
 
-		memcpy(this->matricesUBOBuffer_[frameIndex].mapped, &this->matrices_, sizeof(this->matrices_));
+		memcpy(this->matricesUBOBuffer_[frameIndex].mapped, &matrices, sizeof(matrices));
 	}
 
 	DescriptorSetCount SkyBoxRenderPass::GetDescriptorSetCount()
@@ -289,11 +320,13 @@ namespace engine::render
 			beginLable(currentCB, &labelInfo);
 		}
 
+		static resource::Model* skyboxModel = resource::ResourceManager::Instance().skybox_.get();
+
 		VkDeviceSize offsets[1] = { 0 };
 
-		vkCmdBindDescriptorSets(currentCB, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout_, 0, 1, &this->descriptorSets_[frameIndex].skybox, 0, nullptr);
+		vkCmdBindDescriptorSets(currentCB, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout_, 0, 1, &this->skyboxSets_[frameIndex], 0, nullptr);
 		vkCmdBindPipeline(currentCB, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelines_["skybox"]);
-		this->initInfo_.scene_->skybox_->Draw(currentCB);
+		skyboxModel->Draw(currentCB);
 
 		if (endLable)
 		{
@@ -306,11 +339,17 @@ namespace engine::render
 
 		auto& device = core::Device::Instance();
 
-		if (this->descriptorSetLayouts_.skybox != VK_NULL_HANDLE) 
+		if (this->skyboxLayout_ != VK_NULL_HANDLE) 
 		{
-        	vkDestroyDescriptorSetLayout(device.GetLogicalDeviceHandle(), this->descriptorSetLayouts_.skybox, nullptr);
-            this->descriptorSetLayouts_.skybox = VK_NULL_HANDLE;
+        	vkDestroyDescriptorSetLayout(device.GetLogicalDeviceHandle(), this->skyboxLayout_, nullptr);
+            this->skyboxLayout_ = VK_NULL_HANDLE;
 		}
+
+		for (auto& buffer : this->matricesUBOBuffer_)
+		{
+			buffer.Destroy();
+		}
+		this->matricesUBOBuffer_.clear();
 
 		if (this->pipelineLayout_ != VK_NULL_HANDLE) {
 			vkDestroyPipelineLayout(device.GetLogicalDeviceHandle(), this->pipelineLayout_, nullptr);
@@ -390,49 +429,49 @@ namespace engine::render
 				writeDescriptorSets[0].descriptorCount = 1;
 				writeDescriptorSets[0].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[0].dstBinding = 0;
-				writeDescriptorSets[0].pBufferInfo = &this->initInfo_.scene_->MatricesUBOBuffers_[i].descriptor;
+				writeDescriptorSets[0].pBufferInfo = &(*this->initInfo_.matricesUBOBuffers_)[i].descriptor;
 
 				writeDescriptorSets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 				writeDescriptorSets[1].descriptorCount = 1;
 				writeDescriptorSets[1].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[1].dstBinding = 1;
-				writeDescriptorSets[1].pBufferInfo = &this->initInfo_.scene_->ParamsUBOBuffers_[i].descriptor;
+				writeDescriptorSets[1].pBufferInfo = &(*this->initInfo_.paramsUBOBuffers_)[i].descriptor;
 
 				writeDescriptorSets[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				writeDescriptorSets[2].descriptorCount = 1;
 				writeDescriptorSets[2].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[2].dstBinding = 2;
-				writeDescriptorSets[2].pImageInfo = &this->initInfo_.scene_->GetCubeMap()->irradianceCube_.descriptor_;
+				writeDescriptorSets[2].pImageInfo = &resource::ResourceManager::Instance().GetEnvironmentCubeMap(this->initInfo_.renderScene_->environment.environmentCubeMap)->irradianceCube_.descriptor_;
 
 				writeDescriptorSets[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				writeDescriptorSets[3].descriptorCount = 1;
 				writeDescriptorSets[3].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[3].dstBinding = 3;
-				writeDescriptorSets[3].pImageInfo = &this->initInfo_.scene_->GetCubeMap()->prefilteredCube_.descriptor_;
+				writeDescriptorSets[3].pImageInfo = &resource::ResourceManager::Instance().GetEnvironmentCubeMap(this->initInfo_.renderScene_->environment.environmentCubeMap)->prefilteredCube_.descriptor_;
 
 				writeDescriptorSets[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				writeDescriptorSets[4].descriptorCount = 1;
 				writeDescriptorSets[4].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[4].dstBinding = 4;
-				writeDescriptorSets[4].pImageInfo = &this->textureList_.LUT_.descriptor_;
+				writeDescriptorSets[4].pImageInfo = &this->textureList_.lut_.descriptor_;
 
 				writeDescriptorSets[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				writeDescriptorSets[5].descriptorCount = 1;
 				writeDescriptorSets[5].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[5].dstBinding = 5;
-				writeDescriptorSets[5].pImageInfo = &this->textureList_.Eu_.descriptor_;
+				writeDescriptorSets[5].pImageInfo = &this->textureList_.eu_.descriptor_;
 
 				writeDescriptorSets[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				writeDescriptorSets[6].descriptorCount = 1;
 				writeDescriptorSets[6].dstSet = this->descriptorSets_[i].scene;
 				writeDescriptorSets[6].dstBinding = 6;
-				writeDescriptorSets[6].pImageInfo = &this->textureList_.Eavg_.descriptor_;
+				writeDescriptorSets[6].pImageInfo = &this->textureList_.eavg_.descriptor_;
 
 				vkUpdateDescriptorSets(device.GetLogicalDeviceHandle(), static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, NULL);
 			}
@@ -493,10 +532,11 @@ namespace engine::render
 		}
 
 		// Descriptor sets are *instances* -> one set of descriptors per model
-		auto* scene = this->initInfo_.scene_;
-		for (size_t si = 0; si < scene->GetModelCount(); ++si)
+		auto* scene = this->initInfo_.renderScene_;
+		auto modelHandles = CollectUniqueModels(*scene);
+		for (const auto& modelHandle : modelHandles)
 		{
-			resource::Model* model = scene->GetModelAt(si);
+			resource::Model* model = resource::ResourceManager::Instance().GetModel(modelHandle);
 			if (model == nullptr)
 			{
 				continue;
@@ -608,64 +648,75 @@ namespace engine::render
 		}	
 	}
 	
-	void PBRRenderPass::RenderNode(resource::Model* model, resource::Node *node, VkCommandBuffer currentCB, uint32_t cbIndex, resource::Material::AlphaMode alphaMode)
-	{
-		if (node->mesh) {
-			// Render mesh primitives
-			for (resource::Primitive * primitive : node->mesh->primitives) {
-				if (primitive->material.alphaMode == alphaMode) {
-					std::string pipelineName = "pbr";
-					std::string pipelineVariant = "";
+    VkPipeline PBRRenderPass::SelectPipeline(PipelineVariant variant)
+    {
+        switch (variant)
+        {
+            case PipelineVariant::Pbr:           return this->pipelines_["pbr"];
+            case PipelineVariant::Unlit:         return this->pipelines_["pbr"];         // @todo: 尚无 unlit 管线，暂回退 pbr
+            case PipelineVariant::DoubleSided:   return this->pipelines_["pbr_double_sided"];
+            case PipelineVariant::AlphaBlending: return this->pipelines_["pbr_alpha_blending"];
+        }
+        return this->pipelines_["pbr"];
+    }
 
-					if (primitive->material.unlit) {
-						// KHR_materials_unlit
-						pipelineName = "unlit";
-					};
+    void PBRRenderPass::DrawQueue(const std::vector<RenderItem>& items, VkCommandBuffer cb, uint32_t frameIndex)
+	{	
+		auto& rm = resource::ResourceManager::Instance();
+		resource::Model* currentModel = nullptr;
+		VkPipeline currentPipeline = VK_NULL_HANDLE;
 
-					// Material properties define if we e.g. need to bind a pipeline variant with culling disabled (double sided)
-					if (alphaMode == resource::Material::ALPHAMODE_BLEND) {
-						pipelineVariant = "_alpha_blending";
-					} else {
-						if (primitive->material.doubleSided) {
-							pipelineVariant = "_double_sided";
-						}
-					}
+		VkDeviceSize offsets[1] = { 0 };
 
-					const VkPipeline pipeline = this->pipelines_[pipelineName + pipelineVariant];
+		for (const RenderItem& item : items)
+		{
+			resource::Model* model = rm.GetModel(item.modelHandle);
+			if (!model) continue;
 
-					if (pipeline != this->boundPipeline_) {
-						vkCmdBindPipeline(currentCB, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-						this->boundPipeline_ = pipeline;
-					}
-
-					const std::vector<VkDescriptorSet> descriptorsets = {
-						this->descriptorSets_[cbIndex].scene,
-						primitive->material.descriptorSet,
-						// @todo: per frame-in-flight
-						model->GetDescriptorSetsMeshData()[cbIndex],
-						// this->descriptorSetsMeshData_[cbIndex],
-						model->GetDescriptorSetMaterial()
-					};
-					vkCmdBindDescriptorSets(currentCB, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout_, 0, static_cast<uint32_t>(descriptorsets.size()), descriptorsets.data(), 0, NULL);
-
-					// Pass material index for this primitive using a push constant, the shader uses this to index into the material buffer
-					MeshPushConstantBlock pushConstantBlock{};
-					// @todo: index
-					pushConstantBlock.meshIndex = node->mesh->index;
-					pushConstantBlock.materialIndex = primitive->material.index;
-					vkCmdPushConstants(currentCB, this->pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstantBlock), &pushConstantBlock);
-
-					if (primitive->hasIndices) {
-						vkCmdDrawIndexed(currentCB, primitive->indexCount, 1, primitive->firstIndex, 0, 0);
-					} else {
-						vkCmdDraw(currentCB, primitive->vertexCount, 1, 0, 0);
-					}
-				}
+			// VBO/IBO 只在 model 切换时重绑
+			if (model != currentModel)
+			{
+				VkBuffer vbo = model->GetVertexBuffer();
+				vkCmdBindVertexBuffers(cb, 0, 1, &vbo, offsets);
+				if (model->GetIndexBuffer()) vkCmdBindIndexBuffer(cb, model->GetIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+				currentModel = model;
 			}
 
-		};
-		for (auto child : node->children) {
-			this->RenderNode(model, child, currentCB, cbIndex, alphaMode);
+			// pipeline 选择：从 item 枚举查表（不再现场判断材质属性）
+			VkPipeline pipeline = SelectPipeline(item.pipeline);
+			if (pipeline != currentPipeline)
+			{
+				vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+				currentPipeline = pipeline;
+			}
+
+			// set 绑定：set0(scene) + set1(material) + set2(meshData) + set3(materialSSBO)
+			const std::vector<VkDescriptorSet> descriptorSets = {
+				this->descriptorSets_[frameIndex].scene,
+				item.materialDescriptorSet,
+				model->GetDescriptorSetsMeshData()[frameIndex],
+				model->GetDescriptorSetMaterial()
+			};
+			vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout_,
+				0, static_cast<uint32_t>(descriptorSets.size()), descriptorSets.data(), 0, nullptr);
+
+			// push constant：shader 用它索引 SSBO（材质 + 骨骼矩阵）
+			MeshPushConstantBlock pushConstantBlock{};
+			pushConstantBlock.meshIndex = static_cast<int32_t>(item.meshIndex);
+			pushConstantBlock.materialIndex = static_cast<int32_t>(item.materialIndex);
+			vkCmdPushConstants(cb, this->pipelineLayout_,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, sizeof(MeshPushConstantBlock), &pushConstantBlock);
+
+			// draw：拍平后的索引区间
+			if (item.hasIndices)
+			{
+				vkCmdDrawIndexed(cb, item.indexCount, 1, item.firstIndex, 0, 0);
+			}
+			else
+			{
+				vkCmdDraw(cb, item.vertexCount, 1, 0, 0);
+			}
 		}
 	}
 
@@ -849,7 +900,7 @@ namespace engine::render
 	{
 	    auto& device = core::Device::Instance();
 		uint32_t frameCount = device.GetSetting().frameCount_;
-		auto* scene = this->initInfo_.scene_;
+		auto* scene = this->initInfo_.renderScene_;
 
 		// set=0 (scene): one set per frame, each holding 2 UBO + 5 samplers
 		uint32_t uniformBufferCount = 2 * frameCount;
@@ -858,9 +909,10 @@ namespace engine::render
 
 		uint32_t storageBufferCount = 0;
 
-		for (size_t i = 0; i < scene->GetModelCount(); ++i)
+		auto modelHandles = CollectUniqueModels(*scene);
+		for (const auto& modelHandle : modelHandles)
 		{
-			resource::Model* model = scene->GetModelAt(i);
+			resource::Model* model = resource::ResourceManager::Instance().GetModel(modelHandle);
 			if (model == nullptr)
 			{
 				continue;
@@ -905,18 +957,18 @@ namespace engine::render
         config.vertShader = assetPath + "shaders/genbrdflut.vert.spv";
         config.fragShader = assetPath + "shaders/genbrdflut.frag.spv";
         config.outputFormat = VK_FORMAT_R16G16_SFLOAT;
-        this->textureList_.LUT_ = this->PreComputeTexture(config);
+        this->textureList_.lut_ = this->PreComputeTexture(config);
         
         config.vertShader = assetPath + "shaders/genEuIS.vert.spv";
         config.fragShader = assetPath + "shaders/genEuIS.frag.spv";
         config.outputFormat = VK_FORMAT_R16G16_SFLOAT;
-        this->textureList_.Eu_ = this->PreComputeTexture(config);
+        this->textureList_.eu_ = this->PreComputeTexture(config);
 
         config.vertShader = assetPath + "shaders/genEavg.vert.spv";
         config.fragShader = assetPath + "shaders/genEavg.frag.spv";
         config.outputFormat = VK_FORMAT_R16G16_SFLOAT;
-		config.inputTexture = &this->textureList_.Eu_;
-    	this->textureList_.Eavg_ = this->PreComputeTexture(config);
+		config.inputTexture = &this->textureList_.eu_;
+    	this->textureList_.eavg_ = this->PreComputeTexture(config);
 
 		this->PreProcess();
 	}
@@ -938,40 +990,15 @@ namespace engine::render
 			beginLable(currentCB, &labelInfo);
 		}
 
-		VkDeviceSize offsets[1] = { 0 };
-		auto* scene = this->initInfo_.scene_;
+		auto* scene = this->initInfo_.renderScene_;
 
 		this->boundPipeline_ = VK_NULL_HANDLE;
 
-		for (size_t i = 0; i < scene->GetModelCount(); ++i) {
-			resource::Model* model = scene->GetModelAt(i);
-			if (model == nullptr)
-			{
-				continue;
-			}
-			// 每个 model 绑定自己的 VBO/IBO
-			VkBuffer vbo = model->GetVertexBuffer();
-			vkCmdBindVertexBuffers(currentCB, 0, 1, &vbo, offsets);
-			VkBuffer ibo = model->GetIndexBuffer();
-			if (ibo != VK_NULL_HANDLE) {
-				vkCmdBindIndexBuffer(currentCB, ibo, 0, VK_INDEX_TYPE_UINT32);
-			}
+		const RenderScene* renderScene = this->initInfo_.renderScene_;
 
-			// Opaque primitives first
-			for (auto node : model->GetNodes()) {
-				this->RenderNode(model, node, currentCB, frameIndex, resource::Material::ALPHAMODE_OPAQUE);
-			}
-			// Alpha masked primitives
-			for (auto node : model->GetNodes())
-			{
-				this->RenderNode(model, node, currentCB, frameIndex, resource::Material::ALPHAMODE_MASK);
-			}
-			// Transparent primitives
-			// TODO: Correct depth sorting
-			for (auto node : model->GetNodes()) {
-				this->RenderNode(model, node, currentCB, frameIndex, resource::Material::ALPHAMODE_BLEND);
-			}
-		}
+		DrawQueue(renderScene->opaqueItems, currentCB, frameIndex);
+		DrawQueue(renderScene->maskedItems, currentCB, frameIndex);
+		DrawQueue(renderScene->transparentItems, currentCB, frameIndex);
 
 		if (endLable)
 		{

@@ -1,12 +1,14 @@
+#pragma once
+
 #include <vulkan/vulkan.h>
 #include <vector>
 #include "engine/core/device.h"
 #include "engine/core/swapchain.h"
 #include "engine/core/buffer.h"
 #include "engine/render/fullscreen_pass.h"
+#include "engine/render/render_scene.h"
 #include "engine/resource/texture.h"
 #include "engine/resource/resource_manager.h"
-#include "engine/scene/scene.h"
 
 namespace engine::render
 {
@@ -25,16 +27,17 @@ namespace engine::render
         public:
             bool                        multiSamplingEnabled_;
             engine::core::SwapChain*    swapChain_;
-            scene::Scene*               scene_;
+            const RenderScene*          renderScene_;
             VkPipelineCache*            pipelineCache_;
             VkRenderPass*               mainRenderPass_;
             VkDescriptorPool*           descriptorPool_;
+            // 共享 UBO buffers（Renderer 持有，Pass 填 descriptor 时引用）
+            std::vector<core::Buffer>*  matricesUBOBuffers_;
+            std::vector<core::Buffer>*  paramsUBOBuffers_;
     };
 
     class RenderPass
     {
-        private:
-
         protected:
             RenderPassInitInfo          initInfo_; 
             virtual void                PreProcess() = 0;
@@ -49,37 +52,18 @@ namespace engine::render
             virtual void                Cleanup() = 0;
     };
 
-    struct PreProcessTextureList
-    {
-        public:
-            resource::Texture2D LUT_;
-            resource::Texture2D Eu_;
-            resource::Texture2D Eavg_; 
-    };
-
     class SkyBoxRenderPass : public RenderPass
     {
         private:
-            struct UBOMatrices
+            struct UBOMatricesUpload
             {
                 glm::mat4 projection{ 1.0f };
-		        glm::mat4 model{ 1.0f };
-    		    glm::mat4 view{ 1.0f };
-		        glm::vec3 camPos{ 0.0f };
+                glm::mat4 model{ 1.0f };
             };
 
-            struct DescriptorSetLayouts
-            {
-                VkDescriptorSetLayout skybox{ VK_NULL_HANDLE };
-            }; 
-
-            struct DescriptorSets
-            {
-                VkDescriptorSet skybox = VK_NULL_HANDLE;
-            };
-
-            DescriptorSetLayouts                        descriptorSetLayouts_;
-            std::vector<DescriptorSets>                 descriptorSets_;
+            VkDescriptorSetLayout                       skyboxLayout_{ VK_NULL_HANDLE };
+            std::vector<VkDescriptorSet>                skyboxSets_;
+            std::vector<core::Buffer>                   matricesUBOBuffer_;
 
             VkPipelineLayout                            pipelineLayout_{ VK_NULL_HANDLE };
             std::unordered_map<std::string, VkPipeline> pipelines_;
@@ -90,9 +74,6 @@ namespace engine::render
             void                                        SetUpPipeline(const std::string vertexShader, const std::string fragmentShader);
 
         public:
-            UBOMatrices                                 matrices_;
-            std::vector<core::Buffer>                   matricesUBOBuffer_;
-            
             SkyBoxRenderPass();
             ~SkyBoxRenderPass();
             void                                        UpdateUniformData(uint32_t frameIndex) override;
@@ -105,7 +86,7 @@ namespace engine::render
 
     class PBRRenderPass : public RenderPass
     {
-        private:            
+        private:
             struct MeshPushConstantBlock 
             {
     		    int32_t meshIndex;
@@ -125,6 +106,14 @@ namespace engine::render
                 VkDescriptorSet scene = VK_NULL_HANDLE;
             };
 
+            // PBR 预处理产出的离线贴图（BRDF LUT / 能量补偿 Eu / Eavg）
+            struct PreProcessTextureList
+            {
+                resource::Texture2D lut_;
+                resource::Texture2D eu_;
+                resource::Texture2D eavg_;
+            };
+
             std::vector<DescriptorSets>                 descriptorSets_;
             DescriptorSetLayouts                        descriptorSetLayouts_;
 
@@ -134,13 +123,13 @@ namespace engine::render
 
             PreProcessTextureList                       textureList_;
 
-
             resource::Texture2D                         PreComputeTexture(const FullScreenPassConfig& config);
 
             void                                        PreProcess() override;
             void                                        SetUpDescriptorSetLayout();
             void                                        SetUpPipeline(const std::string vertexShader, const std::string fragmentShader);
-	        void                                        RenderNode(resource::Model* model, resource::Node *node, VkCommandBuffer currentCB, uint32_t cbIndex, resource::Material::AlphaMode alphaMode);
+            void                                        DrawQueue(const std::vector<RenderItem>& items, VkCommandBuffer cb, uint32_t frameIndex);
+            VkPipeline                                  SelectPipeline(PipelineVariant variant);
         public:        
 
             PBRRenderPass();

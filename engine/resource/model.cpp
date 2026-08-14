@@ -95,26 +95,33 @@ namespace engine::resource
 	}
 
 	// Node
-	glm::mat4 Node::LocalMatrix() {
-		if (!this->useCachedMatrix) {
+	glm::mat4 Node::LocalMatrix()  
+	{
+		if (!this->useCachedMatrix) 
+		{
 			this->cachedLocalMatrix = glm::translate(glm::mat4(1.0f), this->translation) * glm::mat4(this->rotation) * glm::scale(glm::mat4(1.0f), this->scale) * this->matrix;
 		};
 		return this->cachedLocalMatrix;
 	}
 
-	glm::mat4 Node::GetMatrix() {
+	glm::mat4 Node::GetMatrix()  
+	{
 		// Use a simple caching algorithm to avoid having to recalculate matrices to often while traversing the node hierarchy
-		if (!this->useCachedMatrix) {
+		if (!this->useCachedMatrix) 
+		{
 			glm::mat4 m = LocalMatrix();
 			Node* p = parent;
-			while (p) {
+			while (p) 
+			{
 				m = p->LocalMatrix() * m;
 				p = p->parent;
 			}
 			this->cachedMatrix = m;
 			this->useCachedMatrix = true;
 			return m;
-		} else {
+		}
+		else 
+		{
 			return this->cachedMatrix;
 		}
 	}

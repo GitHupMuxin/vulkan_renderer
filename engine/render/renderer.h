@@ -2,23 +2,13 @@
 
 #include <unordered_map>
 #include "engine/core/device.h"
-#include "engine/scene/scene.h"
 #include "engine/render/render_pass.h"
 #include "engine/render/fullscreen_pass.h"
+#include "engine/render/render_scene.h"
+#include "engine/render/framebuffer_attachment.h"
 
 namespace engine::render
 {
-    struct RendererControl
-    {
-        bool*       animate;
-
-        float*      animationTimer;
-
-        float*      frameTimer;
-                    
-        int32_t*    animationIndex;
-    };
-
     class RendererDescription
     {
         public:
@@ -29,32 +19,6 @@ namespace engine::render
 
             RendererDescription() = default;
             RendererDescription(const RendererDescription& description) : fullscreen_(description.fullscreen_), vsync_(description.vsync_), multiSampling_(description.multiSampling_) {}
-    };
-
-    class Attachment
-    {
-        public:
-            VkImage         image_ = VK_NULL_HANDLE;
-            VkImageView     imageView_ = VK_NULL_HANDLE;
-            VkDeviceMemory  memory_ = VK_NULL_HANDLE;
-
-            Attachment() = default;
-            ~Attachment();
-            Attachment(const Attachment&) = delete;
-            Attachment& operator=(const Attachment&) = delete;
-            Attachment(Attachment&& other) noexcept;
-            Attachment& operator=(Attachment&& other) noexcept;
-
-            void Destroy();
-    };
-    
-    class MainRenderPassAttachmentList
-    {
-        public:
-            Attachment colorAttachment_;
-            Attachment depthAttachment_;
-            Attachment multisampleColorAttachment_;
-            Attachment multisampleDepthAttachment_;
     };
 
     struct FrameContext
@@ -97,13 +61,10 @@ namespace engine::render
             std::vector<VkFramebuffer>                  frameBuffers_;
             std::vector<MainRenderPassAttachmentList>   mainAttachmentLists_;
 
-            scene::Scene*                               scene_ = nullptr;
             uint32_t                                    frameIndex_ = 0;
             uint32_t                                    imageIndex_ = 0;
 
             VkCommandBuffer                             currentCB_ = VK_NULL_HANDLE;
-
-    	    VkPipeline                                  boundPipeline_{ VK_NULL_HANDLE };
 
             bool                                        paused_ = false;
             bool                                        resizePending_ = false;
@@ -114,6 +75,12 @@ namespace engine::render
             float                                       timestampPeriod_ = 0.0f;
             bool                                        timestampQuerySupported_ = false;
             GpuTimings                                  lastGpuTimings_;            
+
+            // RenderScene 双缓冲（CPU 侧，per frame-in-flight）
+            std::vector<RenderScene>                    renderScenes_;
+            // 共享 UBO buffers（GPU 侧，归 Renderer；Pass 填 descriptor 用）
+            std::vector<core::Buffer>                   matricesUBOBuffers_;
+            std::vector<core::Buffer>                   paramsUBOBuffers_;
 
             void                                        InitSwapChain(engine::platform::Window& window);
             void                                        InitCommandPool();
@@ -127,9 +94,10 @@ namespace engine::render
 
             void                                        DestroyFrameContexts();
 
-        public:
-            RendererControl controller;
+            void                                        CreateUniformBuffers();
+            void                                        DestroyUniformBuffers();
 
+        public:
             Renderer();
             Renderer(const RendererDescription& description);
             ~Renderer();
@@ -139,7 +107,12 @@ namespace engine::render
             void                                        PrepareFrame();
             void                                        Init(engine::platform::Window& window);            
             void                                        AddRenderPass(std::unique_ptr<RenderPass> renderPass); 
-            void                                        BindingScene(scene::Scene* scene);
+
+            // 每帧由组合层（app）传入：把提取好的 RenderScene 拷入当前 frame slot
+            void                                        SetRenderScene(const RenderScene& renderScene);
+
+            // 供组合层查询当前 frame-in-flight 号（动画更新 mesh data buffer 用）
+            uint32_t                                    GetFrameIndex() const;
 
             void                                        CreateMainRenderPass();
             void                                        CreatMainFrameBuffer();
@@ -150,7 +123,6 @@ namespace engine::render
             void                                        Render();
             void                                        EndFrame();
 
-            void                                        UpdateParams();
             void                                        UpdateUniformData();
 
             VkRenderPass                                GetRenderPass();
@@ -159,7 +131,6 @@ namespace engine::render
             GpuTimings                                  GetGpuTimings();
 
             void                                        RequestResize(uint32_t width, uint32_t height, bool force = false);
-            void                                        RecordCommandBuffer();
     };
 
 

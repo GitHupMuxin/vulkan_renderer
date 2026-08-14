@@ -2,6 +2,7 @@
 #include "engine/utils/log.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/core/loader.h"
+#include "engine/core/buffer.h"
 
 namespace engine::render
 {
@@ -9,53 +10,6 @@ namespace engine::render
 	// 每帧 timestamp 查询槽位数：[0]=FrameStart + 每个 Pass 2 个（开始/结束），预留 8 个 Pass 的容量
 	constexpr uint32_t kGpuQueryCount = 1 + 8 * 2;
 
-	Attachment::~Attachment()
-    {
-        this->Destroy();
-    }
-
-    Attachment::Attachment(Attachment&& other) noexcept
-        : image_(other.image_)
-        , imageView_(other.imageView_)
-        , memory_(other.memory_)
-    {
-        other.image_ = VK_NULL_HANDLE;
-        other.imageView_ = VK_NULL_HANDLE;
-        other.memory_ = VK_NULL_HANDLE;
-    }
-
-    Attachment& Attachment::operator=(Attachment&& other) noexcept
-    {
-        if (this != &other) {
-            this->Destroy();
-            this->image_ = other.image_;
-            this->imageView_ = other.imageView_;
-            this->memory_ = other.memory_;
-            other.image_ = VK_NULL_HANDLE;
-            other.imageView_ = VK_NULL_HANDLE;
-            other.memory_ = VK_NULL_HANDLE;
-        }
-        return *this;
-    }
-
-    void Attachment::Destroy()
-    {
-        auto& device = core::Device::Instance();
-        if (imageView_ != VK_NULL_HANDLE) {
-            vkDestroyImageView(device.GetLogicalDeviceHandle(), imageView_, nullptr);
-            imageView_ = VK_NULL_HANDLE;
-        }
-        if (image_ != VK_NULL_HANDLE) {
-            vkDestroyImage(device.GetLogicalDeviceHandle(), image_, nullptr);
-            image_ = VK_NULL_HANDLE;
-        }
-        if (memory_ != VK_NULL_HANDLE) {
-            vkFreeMemory(device.GetLogicalDeviceHandle(), memory_, nullptr);
-            memory_ = VK_NULL_HANDLE;
-        }
-    }
-   
-    
     Renderer::Renderer()
     {
 		this->frameCount_ = core::Device::Instance().GetSetting().frameCount_;
@@ -74,9 +28,13 @@ namespace engine::render
         this->renderPassInitInfo_.swapChain_ = &this->swapChain_;
         this->renderPassInitInfo_.multiSamplingEnabled_ = this->rendererDescription_.multiSampling_;
 		this->renderPassInitInfo_.pipelineCache_ = &this->pipelineCache_;
-		this->renderPassInitInfo_.scene_ = this->scene_;
 		this->renderPassInitInfo_.descriptorPool_ = &this->descriptorPool_;
 		this->renderPassInitInfo_.mainRenderPass_ = &this->mainRenderPass_;
+		this->renderPassInitInfo_.matricesUBOBuffers_ = &this->matricesUBOBuffers_;
+		this->renderPassInitInfo_.paramsUBOBuffers_ = &this->paramsUBOBuffers_;
+		// Pass 的 SetUpDescriptorSetLayout 在 ExecutePreProcess 阶段就会访问 renderScene_
+		// （解析环境贴图 handle），这里先指向第一个 slot，避免空指针
+		this->renderPassInitInfo_.renderScene_ = &this->renderScenes_[0];
     
         for (auto& renderPass : this->renderPasses_)
         {
@@ -119,6 +77,7 @@ namespace engine::render
         this->CreatePipelineCache();
         this->CreateSyncObjects();
 		this->CreateFrameContexts();
+		this->CreateUniformBuffers();
 		this->CreateMainRenderPass();
 		this->CreatMainFrameBuffer();
     }
@@ -127,7 +86,60 @@ namespace engine::render
     void Renderer::AddRenderPass(std::unique_ptr<RenderPass> renderPass)
 	{
 		this->renderPasses_.emplace_back(std::move(renderPass));	
-	} 
+	}
+	
+	void Renderer::SetRenderScene(const RenderScene& renderScene)
+	{
+		// 存入当前 frame-in-flight 的槽（与 UBO 双缓冲同步）
+		this->renderScenes_[this->frameIndex_] = renderScene;
+	}
+
+	uint32_t Renderer::GetFrameIndex() const
+	{
+		return this->frameIndex_;
+	}
+
+    void Renderer::CreateUniformBuffers()
+    {
+		LOG_INFO("Renderer: start to create uniform buffers...");
+		this->renderScenes_.resize(this->frameCount_);
+		this->matricesUBOBuffers_.resize(this->frameCount_);
+		this->paramsUBOBuffers_.resize(this->frameCount_);
+
+		for (uint32_t i = 0; i < this->frameCount_; ++i)
+		{
+			// 共享 camera 矩阵 UBO（对齐 shader set=0 binding=0）
+			this->matricesUBOBuffers_[i].Create(
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				sizeof(UBOMatricesUpload)
+			);
+			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(this->matricesUBOBuffers_[i].buffer), ("MatricesUBO[" + std::to_string(i) + "]").c_str());
+
+			// 共享 params UBO（对齐 shader set=0 binding=1）
+			this->paramsUBOBuffers_[i].Create(
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				sizeof(ParamsUpload)
+			);
+			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(this->paramsUBOBuffers_[i].buffer), ("ParamsUBO[" + std::to_string(i) + "]").c_str());
+		}
+    }
+
+    void Renderer::DestroyUniformBuffers()
+    {
+		for (auto& buffer : this->matricesUBOBuffers_)
+		{
+			buffer.Destroy();
+		}
+		for (auto& buffer : this->paramsUBOBuffers_)
+		{
+			buffer.Destroy();
+		}
+		this->matricesUBOBuffers_.clear();
+		this->paramsUBOBuffers_.clear();
+		this->renderScenes_.clear();
+    }
 
     void Renderer::InitCommandPool()
     {
@@ -259,11 +271,7 @@ namespace engine::render
     // {
     //     this->renderPasses_.push_back(std::move(renderPass));
     // }
-
-    void Renderer::BindingScene(scene::Scene* scene)
-    {
-        this->scene_ = scene;
-    }
+    
 
 	void Renderer::CreateMainRenderPass()
 	{
@@ -897,6 +905,9 @@ namespace engine::render
 		auto& frameContext = this->frameContexts_[this->frameIndex_];
 		uint32_t queryIndex = 1;
 
+		// 每帧使用当前 frame slot 的 RenderScene（由 SetRenderScene 从组合层填充）
+		this->renderPassInitInfo_.renderScene_ = &this->renderScenes_[this->frameIndex_];
+
 		for (auto& renderPass : this->renderPasses_) 
 		{
 			if (this->timestampQuerySupported_)
@@ -915,15 +926,29 @@ namespace engine::render
 		}
 	}
 
-    void Renderer::UpdateParams()
-	{	
-		this->scene_->UpdateParams();
-	}
-
     void Renderer::UpdateUniformData()
 	{
-		this->scene_->UpdateUniformData(this->frameIndex_);
-		this->scene_->UpdateParams();
+		const RenderScene& rs = this->renderScenes_[this->frameIndex_];
+
+		// 组装并上传 shader set=0 binding=0（UBO：projection/model/view/camPos）
+		UBOMatricesUpload matrices;
+		matrices.projection = rs.camera.projection;
+		matrices.model = rs.modelMatrix;
+		matrices.view = rs.camera.view;
+		matrices.camPos = rs.camera.position;
+		memcpy(this->matricesUBOBuffers_[this->frameIndex_].mapped, &matrices, sizeof(matrices));
+
+		// 组装并上传 shader set=0 binding=1（UBOParams）
+		ParamsUpload params;
+		params.lightDir = glm::vec4(rs.light.direction, 0.0f);
+		params.exposure = rs.environment.exposure;
+		params.gamma = rs.environment.gamma;
+		params.prefilteredCubeMipLevels = rs.environment.prefilteredCubeMipLevels;
+		params.scaleIBLAmbient = rs.environment.scaleIBLAmbient;
+		params.debugViewInputs = rs.settings.debugViewInputs;
+		params.debugViewEquation = rs.settings.debugViewEquation;
+		params.debugBsdfType = rs.settings.debugBsdfType;
+		memcpy(this->paramsUBOBuffers_[this->frameIndex_].mapped, &params, sizeof(params));
 	}
 
 	void Renderer::EndFrame()
@@ -983,18 +1008,7 @@ namespace engine::render
 		// 该 FrameContext 已成功提交并展示一帧，下一轮 BeginFrame 才能读取其 timestamp 结果
 		frameContext.hasSubmittedFrame_ = true;
 
-		if (!this->paused_) {
-			// 通过 Scene 便捷方法解析 model（handle 校验），失效则跳过动画更新
-			resource::Model* animModel = this->scene_->GetModelAt(0);
-			if ((*(this->controller.animate)) && animModel != nullptr && animModel->GetAnimations().size() > 0) {
-				*(this->controller.animationTimer) += *(this->controller.frameTimer);
-				if (*(this->controller.animationTimer) > animModel->GetAnimations()[*(this->controller.animationIndex)].end) {
-					*(this->controller.animationTimer) -= animModel->GetAnimations()[*(this->controller.animationIndex)].end;
-				}
-				animModel->UpdateAnimation(*(this->controller.animationIndex), *(this->controller.animationTimer));
-				animModel->UpdateMeshDataBuffer(this->frameIndex_);
-			}
-		}
+		// 动画更新属于"场景逻辑"，由组合层（Application）每帧驱动，Renderer 不持有 Scene
 
 		this->frameIndex_ = (this->frameIndex_ + 1) % this->frameCount_;
 	}
@@ -1051,6 +1065,8 @@ namespace engine::render
         }
 
 		this->DestroyFrameContexts();
+
+		this->DestroyUniformBuffers();
 
         if (this->commandPool_ != VK_NULL_HANDLE) 
 		{

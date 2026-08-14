@@ -4,8 +4,8 @@
 #include "engine/core/keycodes.hpp"
 #include "engine/platform/window.h"
 #include "engine/render/renderer.h"
-#include "engine/render/fullscreen_pass.h"
-#include "engine/scene/camera.h"
+#include "engine/scene/scene.h"
+#include "engine/scene/scene_extractor.h"
 #include "engine/resource/resource_manager.h"
 #include "app/ui/ui.hpp"
 
@@ -28,7 +28,6 @@ namespace app
 
             void                                        HandleMouseMove(int32_t x, int32_t y);
             void                                        WindowResize();
-            void                                        FileDropped(std::string filename);
 
         public:
             float                                       frameTimer = 1.0f;
@@ -36,9 +35,6 @@ namespace app
             uint32_t                                    lastFPS = 0;
 
             ui::MouseButtons                            mouseButtons;
-            std::map<std::string, std::string>          environments;
-    	    std::string                                 selectedEnvironment = "papermill";
-            bool                                        displayBackground = true;
 
             int32_t                                     debugViewInputs = 0;
             int32_t                                     debugViewEquation = 0;
@@ -65,7 +61,6 @@ namespace app
             void                                        AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass);
             void                                        PrepareFrame();
             void                                        InitResourceManager();
-            void                                        LoadAssets();
             void                                        InitCamera();
             void                                        InitScene();
             void                                        SetUpUI();

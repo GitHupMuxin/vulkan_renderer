@@ -1,5 +1,6 @@
-#include <sys/stat.h>
 #include "app/application/application.h"
+#include "engine/scene/scene_extractor.h"
+
 
 namespace app
 {
@@ -42,11 +43,6 @@ namespace app
         engine::render::RendererDescription rendererDescription;
         this->renderer_ = std::make_unique<engine::render::Renderer>(rendererDescription);
         this->renderer_->Init(this->window_);
-
-		this->renderer_->controller.animate = &this->animate;
-		this->renderer_->controller.animationTimer = &this->animationTimer;
-		this->renderer_->controller.frameTimer = &this->frameTimer;
-		this->renderer_->controller.animationIndex = &this->animationIndex;
     }
 
     void Application::AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass)
@@ -57,7 +53,11 @@ namespace app
     void Application::PrepareFrame()
     {
         LOG_INFO("Application: Preparing frame...");
-        this->renderer_->BindingScene(&this->scene_);
+        // 先填一份有效的 RenderScene（Pass 初始化时解析环境贴图 handle 需要），
+        // 之后每帧 RenderFrame 会重新 Extract + SetRenderScene
+        engine::render::RenderScene initialScene = engine::scene::SceneExtractor::ExtractScene(this->scene_);
+        this->renderer_->SetRenderScene(initialScene);
+
         this->renderer_->PrepareFrame();
         this->prepared_ = true;
     }
@@ -178,15 +178,9 @@ namespace app
 				}
 			}
 #endif
-			if (ui_->Combo("Environment##env", selectedEnvironment, environments)) {
-				vkDeviceWaitIdle(device.GetLogicalDeviceHandle());
-				// loadEnvironment(environments[selectedEnvironment]);
-				// setupDescriptors();
-			}
 		}
 
 		if (ui_->Header("Environment")) {
-			ui_->Checkbox("Background", &displayBackground);
 			ui_->Slider("Exposure", &this->scene_.params_.exposure, 0.1f, 10.0f);
 			ui_->Slider("Gamma", &this->scene_.params_.gamma, 0.1f, 4.0f);
 			ui_->Slider("IBL", &this->scene_.params_.scaleIBLAmbient, 0.0f, 1.0f);
@@ -345,12 +339,27 @@ namespace app
 			return;
 		}
 
+		// 组合层职责：场景 → 渲染视图 → 交给 Renderer
+		engine::render::RenderScene renderScene = engine::scene::SceneExtractor::ExtractScene(this->scene_);
+		this->renderer_->SetRenderScene(renderScene);
 		this->renderer_->Render();
 
 		this->ui_->Draw(this->renderer_->GetCurrentCommandBuffer());
 
 		this->renderer_->EndFrame();
 
+		// 动画更新属于"场景逻辑"，由组合层驱动（Renderer 不持有 Scene）
+		if (!this->paused_) {
+			engine::resource::Model* animModel = this->scene_.GetModelAt(0);
+			if (this->animate && animModel != nullptr && animModel->GetAnimations().size() > 0) {
+				this->animationTimer += this->frameTimer;
+				if (this->animationTimer > animModel->GetAnimations()[this->animationIndex].end) {
+					this->animationTimer -= animModel->GetAnimations()[this->animationIndex].end;
+				}
+				animModel->UpdateAnimation(this->animationIndex, this->animationTimer);
+				animModel->UpdateMeshDataBuffer(this->renderer_->GetFrameIndex());
+			}
+		}
 
 		this->frameCounter++;
 		auto tEnd = std::chrono::high_resolution_clock::now();
@@ -473,19 +482,6 @@ namespace app
         case WM_EXITSIZEMOVE:
             this->resizing_ = false;
             break;
-        case WM_DROPFILES: {
-            HDROP hDrop = reinterpret_cast<HDROP>(wParam);
-            char filename[MAX_PATH];
-            uint32_t count = DragQueryFileA(hDrop, -1, nullptr, 0);
-            for (uint32_t i = 0; i < count; ++i) {
-                if (DragQueryFileA(hDrop, i, filename, MAX_PATH)) {
-                    this->FileDropped(filename);
-                }
-                break;
-            }
-            DragFinish(hDrop);
-            break;
-        }
         }
     }
 
@@ -530,36 +526,10 @@ namespace app
         this->camera_.UpdateViewMatrix();
     }
 
-    void Application::FileDropped(std::string filename) {
-        // TODO: reload scene from dropped file
-    }
-
     void Application::InitResourceManager()
     {
         LOG_INFO("Initializing Resource Manager...");
         engine::resource::ResourceManager::Instance().Init();
-    }
-
-
-    void Application::LoadAssets()
-    {
-        std::string assetpath = engine::resource::ResourceManager::assetPath_;
-        struct stat info;
-		if (stat(assetpath.c_str(), &info) != 0) {
-			std::string msg = "Could not locate asset path in \"" + assetpath + "\".\nMake sure binary is run from correct relative directory!";
-			std::cerr << msg << std::endl;
-			exit(-1);
-		}
-
-		std::string sceneFile = assetpath + "models/DamagedHelmet/glTF-Embedded/DamagedHelmet.gltf";
-		sceneFile = assetpath + "models/MetalRoughSpheres/glTF-Embedded/MetalRoughSpheres.gltf";
-		std::string envMapFile = assetpath + "environments/papermill.ktx";
-
-		// loadScene(sceneFile.c_str());
-        // this->modelHandel_ = engine::resource::ResourceManager::Instance().LoadModel(sceneFile.c_str());
-
-		// loadEnvironment(envMapFile.c_str());
-        // this->skyboxHandel_ = engine::resource::ResourceManager::Instance().LoadSkyBox(envMapFile.c_str());
     }
 
 }

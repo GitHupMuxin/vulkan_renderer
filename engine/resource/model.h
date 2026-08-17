@@ -278,6 +278,7 @@ namespace engine::resource
 			{
 				VkBuffer 		buffer = VK_NULL_HANDLE;
 				VkDeviceMemory	memory;
+				VkFence			fence = VK_NULL_HANDLE;   // 上传完成信号（异步加载用）
 			};
 			Vertices 						vertices_;
 
@@ -285,6 +286,7 @@ namespace engine::resource
 			{
 				VkBuffer 		buffer = VK_NULL_HANDLE;
 				VkDeviceMemory 	memory;
+				VkFence			fence = VK_NULL_HANDLE;   // 上传完成信号（异步加载用）
 			};
 			Indices							indices_;
 

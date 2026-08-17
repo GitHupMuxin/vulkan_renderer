@@ -1,5 +1,6 @@
 #include "engine/utils/log.h"
 #include "engine/core/loader.h"
+#include "engine/core/upload_context.h"
 #include "engine/resource/environment_lighting.h"
 #include "engine/resource/resource_manager.h"
 
@@ -265,7 +266,8 @@ namespace engine::resource
                     "EnvironmentCubeMap: Failed to create framebuffer."
                 );
 
-				VkCommandBuffer layoutCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+				VkCommandBuffer layoutCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+
 				VkImageMemoryBarrier imageMemoryBarrier{};
 				imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 				imageMemoryBarrier.image = offscreen.image;
@@ -275,7 +277,8 @@ namespace engine::resource
 				imageMemoryBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 				imageMemoryBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 				vkCmdPipelineBarrier(layoutCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-				device.FlushCommandBuffer(layoutCmd, true);
+
+				core::UploadContext::Instance().EndSingleTimeCommand(layoutCmd);
 			}
 
 			// Descriptors
@@ -475,8 +478,6 @@ namespace engine::resource
 				glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0.0f, 0.0f, 1.0f)),
 			};
 
-			VkCommandBuffer cmdBuf = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, false);
-
 			VkViewport viewport{};
 			viewport.width = (float)dim;
 			viewport.height = (float)dim;
@@ -495,7 +496,7 @@ namespace engine::resource
 
 			// Change image layout for all cubemap faces to transfer destination
 			{
-				device.BeginCommandBuffer(cmdBuf);
+				VkCommandBuffer cmdBuf = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 				VkImageMemoryBarrier imageMemoryBarrier{};
 				imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 				imageMemoryBarrier.image = cubemap.image_;
@@ -505,14 +506,15 @@ namespace engine::resource
 				imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 				imageMemoryBarrier.subresourceRange = subresourceRange;
 				vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-				device.FlushCommandBuffer(cmdBuf, false);
+
+				core::UploadContext::Instance().EndSingleTimeCommand(cmdBuf);
 			}
 
-			for (uint32_t m = 0; m < numMips; m++) {
-				for (uint32_t f = 0; f < 6; f++) {
-
-					device.BeginCommandBuffer(cmdBuf);
-
+			for (uint32_t m = 0; m < numMips; m++)
+			{
+				for (uint32_t f = 0; f < 6; f++) 
+				{
+					VkCommandBuffer cmdBuf = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 					viewport.width = static_cast<float>(dim * std::pow(0.5f, m));
 					viewport.height = static_cast<float>(dim * std::pow(0.5f, m));
 					vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
@@ -522,7 +524,8 @@ namespace engine::resource
 					vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 					// Pass parameters for current pass using a push constant block
-					switch (target) {
+					switch (target) 
+					{
 						case IRRADIANCE:
 							pushBlockIrradiance.mvp = glm::perspective((float)(M_PI / 2.0), 1.0f, 0.1f, 512.0f) * matrices[f];
 							vkCmdPushConstants(cmdBuf, pipelinelayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushBlockIrradiance), &pushBlockIrradiance);
@@ -602,12 +605,12 @@ namespace engine::resource
 						vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
 					}
 
-					device.FlushCommandBuffer(cmdBuf, false);
+					core::UploadContext::Instance().EndSingleTimeCommand(cmdBuf);
 				}
 			}
 
 			{
-				device.BeginCommandBuffer(cmdBuf);
+				VkCommandBuffer cmdBuf = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 				VkImageMemoryBarrier imageMemoryBarrier{};
 				imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 				imageMemoryBarrier.image = cubemap.image_;
@@ -617,7 +620,8 @@ namespace engine::resource
 				imageMemoryBarrier.dstAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
 				imageMemoryBarrier.subresourceRange = subresourceRange;
 				vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-				device.FlushCommandBuffer(cmdBuf, true);
+				
+				core::UploadContext::Instance().EndSingleTimeCommand(cmdBuf);
 			}
 
 

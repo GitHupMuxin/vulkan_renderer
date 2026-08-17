@@ -78,8 +78,8 @@ namespace engine::core
 
             void                                Init(DeviceSetting settings = DeviceSetting());
             bool                                CreateBuffer(VkBufferUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkDeviceSize size, VkBuffer *buffer, VkDeviceMemory *memory, void *data = nullptr, VkDeviceSize *actualBufferSize = nullptr);
-            VkCommandBuffer                     CreateCommandBuffer(VkCommandBufferLevel level, bool begin = false);
-            bool                                FlushCommandBuffer(VkCommandBuffer commandBuffer, bool free = true);
+            // VkCommandBuffer                     CreateCommandBuffer(VkCommandBufferLevel level, bool begin = false);
+            // bool                                FlushCommandBuffer(VkCommandBuffer commandBuffer, bool free = true);
 
 
             void                                SetSettings(DeviceSetting settings);
@@ -88,6 +88,7 @@ namespace engine::core
             VkPhysicalDevice                    GetPhysicalDeviceHandle();
             VkPhysicalDeviceFeatures            GetPhysicalDeviceFeatures();
             VkDevice                            GetLogicalDeviceHandle();
+            uint32_t                            GetGraphicsQueueFamilyIndices();
             VkQueue                             GetGraphicsQueue();
             uint32_t                            GetMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties, VkBool32 *memTypeFound = nullptr);
             VkSampleCountFlagBits               GetMultiSampleCount();

@@ -1,5 +1,6 @@
 #include "app/application/application.h"
 #include "engine/scene/scene_extractor.h"
+#include "engine/core/upload_context.h"
 
 
 namespace app
@@ -11,7 +12,8 @@ namespace app
 
     Application::~Application()
     {
-
+        // UploadContext 依赖 Device，必须在 Device 存活时清理
+        engine::core::UploadContext::Instance().Cleanup();
     }
 
     void Application::SetArgs(int args, char* argv[])
@@ -27,6 +29,9 @@ namespace app
     	setting.validation_ = true;
         setting.multiSampling_ = true;
         engine::core::Device::Instance().Init(setting);
+
+        // UploadContext 在 Device 就绪后初始化（供资源加载异步上传）
+        engine::core::UploadContext::Instance().Init();
     }
 
     

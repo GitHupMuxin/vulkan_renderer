@@ -15,6 +15,7 @@ set(ENGINE_CORE_SRC
     "core/logical_device.cpp"
     "core/physical_device.cpp"
     "core/swapchain.cpp"
+    "core/upload_context.cpp"
 )
 set(ENGINE_CORE_HEADERS
     "core/buffer.h"
@@ -24,6 +25,7 @@ set(ENGINE_CORE_HEADERS
     "core/logical_device.h"
     "core/physical_device.h"
     "core/swapchain.h"
+    "core/upload_context.h"
 )
 
 # --- Resource ---

@@ -1,5 +1,5 @@
 #include "engine/resource/texture.h"
-
+#include "engine/core/upload_context.h"
 
 namespace engine::resource
 {
@@ -268,7 +268,7 @@ namespace engine::resource
                 "Texture: Failed to bind image memory"
             );
 
-			VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+			VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
 			VkImageSubresourceRange subresourceRange = {};
 			subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -315,7 +315,7 @@ namespace engine::resource
 			imageMemoryBarrier.subresourceRange = subresourceRange;
 			vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
 
-			device.FlushCommandBuffer(copyCmd, true);
+            core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
 
 			vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
 			vkDestroyBuffer(device.GetLogicalDeviceHandle(), stagingBuffer, nullptr);
@@ -441,7 +441,7 @@ namespace engine::resource
                 "Texture: Failed to bind image memory."
             );
 
-			VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+			VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
 			VkImageSubresourceRange subresourceRange = {};
 			subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -483,13 +483,13 @@ namespace engine::resource
 				vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
 			}
 
-			device.FlushCommandBuffer(copyCmd, true);
+            core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
 
 			vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
 			vkDestroyBuffer(device.GetLogicalDeviceHandle(), stagingBuffer, nullptr);
 
 			// Generate the mip chain (glTF uses jpg and png, so we need to create this manually)
-			VkCommandBuffer blitCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+			VkCommandBuffer blitCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 			for (uint32_t i = 1; i < this->mipLevels_; i++) {
 				VkImageBlit imageBlit{};
 
@@ -555,7 +555,7 @@ namespace engine::resource
 				vkCmdPipelineBarrier(blitCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
 			}
 
-			device.FlushCommandBuffer(blitCmd, true);
+            core::UploadContext::Instance().EndSingleTimeCommand(blitCmd);
 		}
 
 		VkSamplerCreateInfo samplerInfo{};
@@ -623,7 +623,7 @@ namespace engine::resource
         VkMemoryRequirements memReqs;
 
         // Use a separate command buffer for texture loading
-        VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+        VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
         // Create a host-visible staging buffer that contains the raw image data
         VkBuffer stagingBuffer;
@@ -771,7 +771,7 @@ namespace engine::resource
             vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
         }
 
-        device.FlushCommandBuffer(copyCmd, true);
+        core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
 
         // Clean up staging resources
         vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
@@ -836,7 +836,7 @@ namespace engine::resource
         memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         VkMemoryRequirements memReqs;
         // Use a separate command buffer for texture loading
-        VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+        VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
         // Create a host-visible staging buffer that contains the raw image data
         VkBuffer stagingBuffer;
@@ -969,7 +969,7 @@ namespace engine::resource
             vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
         }
 
-        device.FlushCommandBuffer(copyCmd, true);
+        core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
 
         // Clean up staging resources
         vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
@@ -1164,7 +1164,8 @@ namespace engine::resource
         );
 
         // Use a separate command buffer for texture loading
-        VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+        VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+
 
         // Image barrier for optimal image (target)
         // Set initial layout for all array layers (faces) of the optimal (target) tiled texture
@@ -1209,7 +1210,7 @@ namespace engine::resource
             vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
         }
 
-        device.FlushCommandBuffer(copyCmd, true);
+        core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
 
         // Create sampler
         VkSamplerCreateInfo samplerCreateInfo{};

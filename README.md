@@ -1,147 +1,69 @@
-# Vulkan physically-Based Rendering using glTF 2.0 models
+# Vulkan glTF PBR Renderer
 
-<img src="./screenshots/damagedhelmet.jpg" width="644px"> <img src="./screenshots/polly.jpg" width="320px"> <img src="./screenshots/busterdrone.jpg" width="320px">
+<p align="center">
+  <img src="screenshots/damagedhelmet.jpg" alt="Damaged Helmet rendered with Vulkan PBR" width="760">
+</p>
 
-[YouTube Vulkan glTF 2.0 playlist](https://www.youtube.com/watch?v=sl7iN-vQCOs&list=PLy80eMh1-zPUz7y1JtFiS9I6H7_trBUAf)
+A small Vulkan renderer for glTF 2.0 models, based on
+[Sascha Willems' Vulkan-glTF-PBR](https://github.com/SaschaWillems/Vulkan-glTF-PBR).
+It provides a compact PBR rendering baseline with separate application, scene,
+resource, and rendering layers.
 
-## About
+## Current features
 
-Physically-Based Rendering example implementation with image based lighting in Vulkan using glTF 2.0 models. The lighting equation is based on the [reference glTF PBR implementation](https://github.com/KhronosGroup/glTF-WebGL-PBR) from Khronos. 
+- glTF 2.0 model loading with metallic-roughness PBR and image-based lighting.
+- Skybox, irradiance map, prefiltered environment map, and BRDF LUT generation.
+- Explicit `FrameContext` synchronization and swapchain resize handling.
+- Vulkan debug labels, object names, timestamp queries, and an ImGui timing panel.
+- Generation-based resource handles and deferred GPU resource destruction.
+- `RenderScene` extraction that separates scene representation from render execution.
+- Timeline-semaphore-driven staging ring allocation for asynchronous buffer uploads.
 
-## glTF 2.0 Model loading
+## Known upload limitations
 
-Model loading is implemented in the [vkglTF::Model](./base/VulkanglTFModel.h) class, using [tiny glTF library](https://github.com/syoyo/tinygltf) to import the glTF 2.0 files, so e.g. all file formats supported by tinyglTF are suported. This class converts the glTF structures into Vulkan compatible structures used for setup and rendering.
+The staging ring currently covers buffer-to-buffer uploads used by model vertex
+and index data. A few call sites still use their previous staging or immediate-submit
+paths, and image uploads (`vkCmdCopyBufferToImage`) have not yet been migrated.
 
-The following major glTF 2.0 features are currently supported by the [vkglTF::Model](./base/VulkanglTFModel.h) class:
+## Project layout
 
-* [x] Loading arbitrary glTF 2.0 models
-    * [x] Full node hierarchy
-    * [x] Full PBR material support
-        * [x] Metallic-Roughness workflow
-        * [x] Specular-Glossiness workflow (extension)
-    * [x] Animations   
-        * [x] Articulated (translate, rotate, scale)
-        * [x] Skinned
-        * [ ] Morph targets
-    * [x] Support for Draco mesh compression ([see instructions](#how-to-enable-draco-mesh-compression))
-
-Note that the model loader does not fully implement all aspects of the glTF 2.0 standard, and as such there is no guarantee that all glTF 2.0 models work properly.
-
-Supported extensions:
-
-* KHR_materials_pbrSpecularGlossiness
-* KHR_materials_unlit
-* KHR_materials_emissive_strength
-* KHR_texture_basisu
-
-## Loading different scenes
-
-The repository only includes a basic scene setup with the static "damaged helmet" pbr sample model. The official collection of glTF 2.0 sample models can be found at [here](https://github.com/KhronosGroup/glTF-Sample-Models).
-
-To load a different scene instead, specify the glTF model file name as a command line argument, e.g.:
-
-```
-Vulkan-glTF-pbr "PATH-TO-glTF-Sample-Models\2.0\BrainStem\glTF\brainstem.gltf"
-```
-
-On Windows the application supports drag and drop. You can simply drop a `.gltf` or `.glb` file to load onto the main window.
-
-## Texture map generation
-
-The physical based render model uses multiple source images for the lighting equation. Instead of relying on offline tools to generate those, this example will generate all required texture maps during startup using the GPU.
-
-### BRDF lookup table
-
-<img src="./screenshots/tex_brdflut.png" width="256px">
-
-This pass generates a 2D BRDF lookup table based on the formulas used in the pbr implementation. The lookup table contains BRDF values for roughness and view angle and is stored as a 16-bit per component floating point texture to provide proper precision.
-
-See ```VulkanApplication::generateBRDFLUT()```
-
-### Irradiance cube map
-
-<img src="./screenshots/tex_envmap.png" width="256px"> <img src="./screenshots/tex_irradiance_cube.png" width="256px">
-
-(*left*: front face environment cube map / *right*: front face irradiance cube map)
-
-Generates a small (64 x 64 px) irradiance cube map from that stores the light radiated from the surrounding environment. This is sampled for the **indirect diffuse** part of the lighting equation.
-
-See ```VulkanApplication::generateCubemaps()``` with target ```IRRADIANCE```
-
-### Pre-filtered (mip-mapped radiance) environment cube map
-
-<img src="./screenshots/tex_envmap.png" width="256px"> <img src="./screenshots/tex_prefiltered_cube.png" width="256px">
-
-(*left*: front face environment cube map / *right*: front face prefiltered cube map)
-
-Generates a pre-filtered radiance cube map that is sampled for the **indirect specular** part of the lighting equation and stores specular contribution based on roughness. The mip chain stores increasing roughness values with increasing level count and is sampled accordingly when rendering the object.
-
-Complete mip chain from *left* roughness = 0.0 to *right* roughness = 1.0:
-
-<img src="./screenshots/tex_prefiltered_cube_mipchain_0.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_1.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_2.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_3.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_4.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_5.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_6.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_7.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_8.png"> <img src="./screenshots/tex_prefiltered_cube_mipchain_9.png">
-
-(*note:* down/up sized to same size for visualization)
-
-See ```VulkanApplication::generateCubemaps()``` with target ```PREFILTEREDENV```
-
-## Cloning
-This repository contains submodules for some of the external dependencies, so when doing a fresh clone you need to clone recursively:
-
-```
-git clone --recursive https://github.com/SaschaWillems/Vulkan-glTF-PBR.git
-```
-
-Updating submodules manually:
-
-```
-git submodule init
-git submodule update
+```text
+app/                 Application composition, window loop, and ImGui UI
+engine/core/         Vulkan device, swapchain, buffers, and staging ring
+engine/resource/     glTF models, textures, environments, and resource manager
+engine/scene/        Camera, scene description, and render-scene extraction
+engine/render/       Renderer, render passes, and RenderScene data
+engine/platform/     Platform window abstraction
+data/                Models, environments, textures, and shaders
+external/            Third-party dependencies
 ```
 
 ## Building
 
-The repository contains everything required to compile and build the examples on **Windows**, **Linux** and **Android** using a C++ compiler that supports C++14. All required dependencies are included.
+The primary development configuration is Windows with Vulkan SDK, CMake, Ninja,
+MinGW GCC, Python 3, and a C++20 compiler.
 
-### Windows, Linux
+Clone the repository with submodules:
 
-Use the provided CMakeLists.txt with CMake to generate a build configuration for your favorite IDE or compiler, e.g.:
-
-Windows:
-```
-cmake -G "Visual Studio 14 2015 Win64"
-```
-
-Linux:
-```
-cmake .
-make
+```bash
+git clone --recursive https://github.com/GitHupMuxin/vulkan_renderer.git
+cd vulkan_renderer
 ```
 
-### Android 
+Configure and build with the included preset:
 
-<img src="./screenshots/damagedhelmet_android.jpg" width="644px">
+```bash
+cmake --preset gcc-ninja
+cmake --build --preset gcc-ninja
+```
 
-#### Prerequisites
+Shader compilation is part of the build. The Python executable is currently
+configured in `app/CMakeLists.txt`; adjust that path for your local environment.
 
-- [Android Studio Jellyfish(2023.3.1)](https://developer.android.com/studio/index.html) or higher
-- Android [NDK](https://developer.android.com/ndk/downloads/index.html)
+## Credits
 
-#### Building
+- Original renderer: [Sascha Willems — Vulkan-glTF-PBR](https://github.com/SaschaWillems/Vulkan-glTF-PBR)
+- glTF loading: [tinygltf](https://github.com/syoyo/tinygltf)
+- glTF specification: [Khronos glTF](https://github.com/KhronosGroup/glTF)
 
-- In Android Studio, select ```Import project```
-- Select the ```android``` sub folder of the repository
-- Once import has finished the project can be build, run and debugged from Android Studio
-
-NOTE: Android SDK API version is set to 33 (Android 13).
-
-## How to enable Draco mesh compression
-In order to enable support for loading Draco compressed glTF files you need to:
-- Clone and build https://github.com/google/draco as per their [build instructions](https://github.com/google/draco#building)
-- Copy the Draco decoder library ```dracodec.lib``` into ```libs\draco```
-- Copy the ```src``` folder contents into ```external\draco```, make sure the ```draco_features.h``` is also present
-- If everything is in place, running CMake will output ```Draco mesh compression enabled``` and loading Draco compressed meshes will work out of the box
-
-## Links
-* [glTF format specification](https://github.com/KhronosGroup/glTF)
-* [glTF V2.0 Sample Models](https://github.com/KhronosGroup/glTF-Sample-Assets)
-* [tiny glTF library](https://github.com/syoyo/tinygltf)
+See [LICENSE](LICENSE) for licensing information.

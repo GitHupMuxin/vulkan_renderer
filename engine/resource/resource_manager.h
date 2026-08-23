@@ -30,6 +30,7 @@ namespace engine::resource
     enum class ResourceState
     {
         Free,           // 槽位空闲（未使用，可复用）
+        Uploading,      // 已分配，GPU 上传在途（回执未达成，GetModel 返回 nullptr，暂不渲染）
         Ready,          // 就绪（可渲染）
         PendingDelete   // 待删（Handle 已失效，GPU 用完就销毁）
     };
@@ -82,6 +83,10 @@ namespace engine::resource
             // 三层校验：index 越界 → state == Ready → generation 匹配，任一失败返回 nullptr
             Model*                                          GetModel(ModelHandle handle);
             EnvironmentCubeMap*                             GetEnvironmentCubeMap(EnvironmentCubeMapHandle handle);
+            // 仅校验 index + generation（资源存在、GPU 对象可访问），不要求 state==Ready。
+            // 语义：资源已注册且未失效。用于"分配 descriptor set / 生成 RenderItem"等
+            // 只看资源存在性的场景；"是否可渲染"由 GetModel（state==Ready）决定。
+            Model*                                          PeekModel(ModelHandle handle);
             bool                                            IsModelAlive(ModelHandle handle) const;
             bool                                            IsEnvironmentAlive(EnvironmentCubeMapHandle handle) const;
             uint32_t                                        GetModelSize() const;

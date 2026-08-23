@@ -43,9 +43,14 @@ namespace engine::scene
 
         for (size_t i = 0; i < scene.GetModelCount(); ++i)
         {
-            resource::ModelHandle h = scene.sceneObjects_[i].modelHandle;   
-            resource::Model* model = rm.GetModel(h);
-            if (model == nullptr) continue;   
+            resource::ModelHandle h = scene.sceneObjects_[i].modelHandle;
+            // PeekModel：资源存在即可参与提取（上传在途也算），只保证 descriptor/几何可用；
+            // "是否可渲染"由 DrawQueue 的 GetModel(state==Ready) 决定
+            resource::Model* model = rm.PeekModel(h);
+            if (model == nullptr) continue;
+
+            // 显式注册：descriptor 分配、就绪轮询等"资源存在性"遍历用
+            renderScene.modelHandles.push_back(h);
 
             const glm::mat4& world = scene.sceneObjects_[i].transform;
 

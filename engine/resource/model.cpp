@@ -1346,13 +1346,6 @@ namespace engine::resource
 			this->shaderMaterialBuffer_.Destroy();
 		}
 		VkDeviceSize bufferSize = shaderMaterials.size() * sizeof(ShaderMaterial);
-		engine::core::Buffer stagingBuffer;
-
-		SUCCESS_OR_LOG(
-			device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			bufferSize, &stagingBuffer.buffer, &stagingBuffer.memory, shaderMaterials.data()),
-			"GLTFModel: Failed to create staging buffer for material SSBO.");
 
 		SUCCESS_OR_LOG(
 			device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -1360,17 +1353,10 @@ namespace engine::resource
 			bufferSize, &this->shaderMaterialBuffer_.buffer, &this->shaderMaterialBuffer_.memory),
 			"GLTFModel: Failed to create device-local buffer for material SSBO.");
 
-		// Copy from staging buffer to device-local buffer
-		VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-		VkBufferCopy copyRegion{};
-		copyRegion.size = bufferSize;
-		vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, this->shaderMaterialBuffer_.buffer, 1, &copyRegion);
-
-		device.FlushCommandBuffer(copyCmd, true);
-
-		stagingBuffer.device = device.GetLogicalDeviceHandle();
-		stagingBuffer.Destroy();
+		// 异步搬运（ring staging -> 目标，提交不等待；回执 = timeline 值）
+		this->materialReadyAt_ = core::StagingRingAllocator::Instance().SubmitBufferCopy(
+			shaderMaterials.data(), bufferSize, this->shaderMaterialBuffer_.buffer
+		).readyAt;
 
 		// Update descriptor
 		this->shaderMaterialBuffer_.descriptor.buffer = this->shaderMaterialBuffer_.buffer;
@@ -1410,28 +1396,15 @@ namespace engine::resource
 				shaderMeshDataBuffer.Map();
 				memcpy(shaderMeshDataBuffer.mapped, shaderMeshData.data(), bufferSize);
 			} else {
-				engine::core::Buffer stagingBuffer;
-				SUCCESS_OR_LOG(
-					device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, bufferSize, &stagingBuffer.buffer, &stagingBuffer.memory, shaderMeshData.data()),
-					"GLTFModel: Failed to create buffer."
-					);
-
 				SUCCESS_OR_LOG(
 					device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, bufferSize, &shaderMeshDataBuffer.buffer, &shaderMeshDataBuffer.memory) == VK_SUCCESS,
 					"GLTFModel: Failed to create buffer."
 				);
 
-				// Copy from staging buffers
-				VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-				VkBufferCopy copyRegion{};
-				copyRegion.size = bufferSize;
-				vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, shaderMeshDataBuffer.buffer, 1, &copyRegion);
-				
-				device.FlushCommandBuffer(copyCmd, true);
-
-				stagingBuffer.device = device.GetLogicalDeviceHandle();
-				stagingBuffer.Destroy();
+				// 异步搬运（ring staging -> 目标，提交不等待；同队列隐式序保证按序执行）
+				core::StagingRingAllocator::Instance().SubmitBufferCopy(
+					shaderMeshData.data(), bufferSize, shaderMeshDataBuffer.buffer
+				);
 			}
 			// Update descriptor
 			shaderMeshDataBuffer.descriptor.buffer = shaderMeshDataBuffer.buffer;
@@ -1487,6 +1460,19 @@ namespace engine::resource
 	std::unique_ptr<Model> GLTFModel::Clone()
 	{
 		return std::move(std::make_unique<GLTFModel>());
+	}
+
+	bool GLTFModel::IsReady() const
+	{
+		auto& allocator = core::StagingRingAllocator::Instance();
+		if (!allocator.IsCompleted(this->vertices_.readyAt)) return false;
+		if (!allocator.IsCompleted(this->indices_.readyAt)) return false;
+		if (!allocator.IsCompleted(this->materialReadyAt_)) return false;		
+		for (const auto& texture : this->textures_)
+		{
+			if (!allocator.IsCompleted(texture.readyAt_)) return false;
+		}
+		return true;
 	}
 
 	glm::mat4 GLTFModel::GetAABBBox()

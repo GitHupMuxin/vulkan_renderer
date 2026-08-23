@@ -83,6 +83,11 @@ namespace engine::render
         // 当前 shader 的 UBO model 矩阵（场景主物体的世界变换）
         glm::mat4                           modelMatrix{ 1.0f };
 
+        // 场景引用的全部模型（显式注册，与 RenderItem 分开）：
+        // descriptor set 分配、就绪轮询等"资源存在性"遍历用；
+        // 实际绘制按 opaque/masked/transparentItems 队列。
+        std::vector<resource::ModelHandle>  modelHandles;
+
         std::vector<RenderItem>             opaqueItems;
         std::vector<RenderItem>             maskedItems;
         std::vector<RenderItem>             transparentItems;

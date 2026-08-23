@@ -27,13 +27,15 @@ namespace engine::core
     };
 
     // 描述，但不管理
-    struct PendingCopy
+    // 在途上传的生命周期记账：GPU 完成（timeline 值达成）后需要归还的资源。
+    // 录制所需的信息（拷贝目标/布局等）在提交前已被消费，不进入队列。
+    struct PendingUpload
     {
-        StagingBufferSlot                       stagingSlot;
-        VkCommandBuffer                         commandBuffer = VK_NULL_HANDLE;
         uint64_t                                submitValue = 0;
-        VkBuffer                                dst = VK_NULL_HANDLE;
-        VkDeviceSize                            dstOffset = 0;
+        VkCommandBuffer                         commandBuffer = VK_NULL_HANDLE;
+        StagingBufferSlot                       slot;                                   // 常规路径：ring 切片
+        VkBuffer                                ownedBuffer = VK_NULL_HANDLE;           // 超大回退：一次性 staging，回收时销毁
+        VkDeviceMemory                          ownedMemory = VK_NULL_HANDLE;
     };
 
 
@@ -56,6 +58,8 @@ namespace engine::core
             void Init();
             void Cleanup();
 
+            VkDeviceSize GetCapacity() const { return this->capacity_; }
+
             bool CanFit(VkDeviceSize size) const;
             StagingBufferSlot Acquire(VkDeviceSize size);
             void Release(const StagingBufferSlot& slot);    // 还账：usage_ -= reservedBytes
@@ -77,14 +81,13 @@ namespace engine::core
             VkDevice                            device_ = VK_NULL_HANDLE;
             VkQueue                             queue_ = VK_NULL_HANDLE;
             VkCommandPool                       commandPool_ = VK_NULL_HANDLE;
-            uint64_t                            timeLine_ = 0;
 
             StagingRingBuffer                   stagingRingBuffer_;
             VkSemaphore                         timelineSemaphore_ = VK_NULL_HANDLE;
             uint64_t                            submittedValue_ = 0;   
             uint64_t                            completedValue_ = 0;   
 
-            std::queue<PendingCopy>             waitingList_;
+            std::queue<PendingUpload>           waitingList_;
 
             static const uint32_t               commandSize_;
             std::queue<VkCommandBuffer>         freeCommandBufferList_;
@@ -95,25 +98,31 @@ namespace engine::core
             StagingRingAllocator(const StagingRingAllocator&) = delete;
             StagingRingAllocator& operator = (const StagingRingAllocator&) = delete;
 
-            bool ExecuteBufferCopy(PendingCopy& pendingCopy);
-            void FreePendingCopy(PendingCopy& pendingCopy);
+            // 三个 Submit 的公共骨架
+            StagingBufferSlot                   AcquireSlot(VkDeviceSize size);        // 回收 + 回绕 + 取 ring 切片
+            VkCommandBuffer                     AcquireCommandBuffer();               // 池空则等待最老在途项再回收
+            uint64_t                            SubmitRecorded(VkCommandBuffer cmd);  // end + timeline 提交，返回回执值
+            UploadReceipt                       SubmitOversizedBufferCopy(const void* src, VkDeviceSize srcSize, VkBuffer dst, VkDeviceSize dstOffset);
 
-            void Recycle();
-            bool GetCommandBuffer(VkCommandBuffer& cmd);
+            void                                FreePendingCopy(PendingUpload& pendingUpload);
+
+            void                                Recycle();
+            bool                                GetCommandBuffer(VkCommandBuffer& cmd);
         public:
             static StagingRingAllocator&        Instance();
             void                                Init();
             void                                Cleanup();
 
+            void                                Tick();                                // 每帧调用：回收已完成项，空闲期也还账
+
             UploadReceipt                       SubmitBufferCopy(const void* src, VkDeviceSize srcSize, VkBuffer dst, VkDeviceSize dstOffset = 0);
 
             UploadReceipt                       SubmitImageCopy(
                                                     const void* src, VkDeviceSize srcSize,
-                                                    VkImage dst,                                
-                                                    const std::vector<VkBufferImageCopy>& regions,  
-                                                    VkImageLayout finalLayout,                  
-                                                    uint32_t baseMip = 0, uint32_t mipCount = 0,
-                                                    uint32_t baseLayer = 0, uint32_t layerCount = 0);
+                                                    VkImage dst,
+                                                    const std::vector<VkBufferImageCopy>& regions,
+                                                    VkImageLayout finalLayout,
+                                                    VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED);
 
             uint64_t                            GetCompletedValue();          
             bool                                IsCompleted(uint64_t at);     

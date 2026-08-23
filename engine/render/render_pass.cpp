@@ -7,32 +7,29 @@
 namespace engine::render
 {
 
-    // 从 RenderScene 的三个队列收集去重的 model handle（index + generation）
+    // 收集 RenderScene 显式注册的 model handle（去重）。
+    // RenderScene 提供 modelHandles（SceneExtractor 从场景填充），
+    // descriptor 分配、就绪轮询等"资源存在性"遍历用它，而不是从 RenderItem 队列收集：
+    // 上传在途（Uploading）的模型不产生 RenderItem（渲染门控），但必须分配 descriptor set。
     static std::vector<resource::ModelHandle> CollectUniqueModels(const RenderScene& renderScene)
     {
         std::vector<resource::ModelHandle> handles;
-        auto collect = [&handles](const std::vector<RenderItem>& items)
+        for (const auto& h : renderScene.modelHandles)
         {
-            for (const auto& item : items)
+            bool found = false;
+            for (const auto& existing : handles)
             {
-                bool found = false;
-                for (const auto& h : handles)
+                if (existing.index == h.index && existing.generation == h.generation)
                 {
-                    if (h.index == item.modelHandle.index && h.generation == item.modelHandle.generation)
-                    {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found)
-                {
-                    handles.push_back(item.modelHandle);
+                    found = true;
+                    break;
                 }
             }
-        };
-        collect(renderScene.opaqueItems);
-        collect(renderScene.maskedItems);
-        collect(renderScene.transparentItems);
+            if (!found)
+            {
+                handles.push_back(h);
+            }
+        }
         return handles;
     }
 
@@ -536,7 +533,8 @@ namespace engine::render
 		auto modelHandles = CollectUniqueModels(*scene);
 		for (const auto& modelHandle : modelHandles)
 		{
-			resource::Model* model = resource::ResourceManager::Instance().GetModel(modelHandle);
+			// PeekModel：资源存在即分配 descriptor set（buffer 已创建），与渲染就绪解耦
+			resource::Model* model = resource::ResourceManager::Instance().PeekModel(modelHandle);
 			if (model == nullptr)
 			{
 				continue;
@@ -912,7 +910,9 @@ namespace engine::render
 		auto modelHandles = CollectUniqueModels(*scene);
 		for (const auto& modelHandle : modelHandles)
 		{
-			resource::Model* model = resource::ResourceManager::Instance().GetModel(modelHandle);
+			// PeekModel：资源存在（Uploading 也算）即计入配额——descriptor set 必须分配，
+			// 与渲染就绪（state==Ready）解耦；渲染门控在 DrawQueue
+			resource::Model* model = resource::ResourceManager::Instance().PeekModel(modelHandle);
 			if (model == nullptr)
 			{
 				continue;

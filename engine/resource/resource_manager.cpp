@@ -45,6 +45,10 @@ namespace engine::resource
         this->emptyTexture2D_ = std::make_unique<Texture2D>();
         this->emptyTexture2D_->LoadFromFile(emptyTexture2DFile, VK_FORMAT_R8G8B8A8_UNORM);
 
+        // 系统资源（skybox/空纹理）是应用整个生命周期使用的，且不走 Handle 状态机，
+        // 等待其上传完成，保证首帧即可用。场景模型（LoadModel）走 Uploading→Ready 状态机，不在此等待。
+        core::StagingRingAllocator::Instance().WaitAll();
+
         // 用户资产（场景模型、环境贴图）由 Scene 按 SceneDescription 加载，
         // 见 Scene::Init(const SceneDescription&)，这里不再预加载。
     }
@@ -64,6 +68,21 @@ namespace engine::resource
         {
             return nullptr;
         }
+        return slot.resource.get();
+    }
+
+    Model* ResourceManager::PeekModel(ModelHandle handle)
+    {
+        if (handle.index >= this->modelSlots_.size())
+        {
+            return nullptr;
+        }
+        auto& slot = this->modelSlots_[handle.index];
+        if (slot.generation != handle.generation)
+        {
+            return nullptr;
+        }
+        // 不检查 state：Uploading（上传在途）也算资源存在，GPU 对象（buffer/image）已创建
         return slot.resource.get();
     }
 
@@ -153,6 +172,16 @@ namespace engine::resource
     {
         this->currentFrame_++;
 
+        // Uploading → Ready：GPU 上传回执达成（顶点/索引/材质/纹理全部完成）的模型转为可渲染
+        for (auto& slot : this->modelSlots_)
+        {
+            if (slot.state == ResourceState::Uploading && slot.resource->IsReady())
+            {
+                slot.state = ResourceState::Ready;
+                LOG_INFO("ResourceManager: model upload completed, ready to render.");
+            }
+        }
+
         for (auto it = this->pendingDeletions_.begin(); it != this->pendingDeletions_.end(); )
         {
             if (it->retireFrame <= this->currentFrame_)
@@ -220,11 +249,10 @@ namespace engine::resource
         ResourceSlot<Model> slot;
         slot.resource = std::move(model);
         slot.generation = 0;
-        slot.state = ResourceState::Ready;
+        // 异步上传已提交但未等待：标记 Uploading，GPU 回执达成后由 OnFrameCompleted 转 Ready。
+        // 期间 GetModel 校验 state != Ready 返回 nullptr → SceneExtractor 不生成 RenderItem → 不渲染。
+        slot.state = ResourceState::Uploading;
         this->modelSlots_.emplace_back(std::move(slot));
-
-        // 异步上传已提交，等待完成确保该模型立即可用（初始化场景一次性确认）
-        core::StagingRingAllocator::Instance().WaitAll();
 
         return ModelHandle{ static_cast<uint32_t>(this->modelSlots_.size() - 1), 0 };
     }

@@ -181,39 +181,6 @@ namespace engine::resource
 				totalBufferSize += numBlocksOrPixels * bytesPerBlockOrPixel;
 			}
 
-			VkBuffer stagingBuffer;
-			VkDeviceMemory stagingMemory;
-			VkBufferCreateInfo bufferCreateInfo{};
-			bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-			bufferCreateInfo.size = totalBufferSize;
-			bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-			bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-			SUCCESS_OR_LOG(
-			    vkCreateBuffer(device.GetLogicalDeviceHandle(), &bufferCreateInfo, nullptr, &stagingBuffer) == VK_SUCCESS,	
-                "Texture: Failed to Create Buffer"
-            );
-
-			vkGetBufferMemoryRequirements(device.GetLogicalDeviceHandle(), stagingBuffer, &memReqs);
-			memAllocInfo.allocationSize = memReqs.size;
-			memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-			SUCCESS_OR_LOG(
-			    vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &stagingMemory) == VK_SUCCESS, 
-                "Texture: Failed to allocate memory."
-            );
-
-			SUCCESS_OR_LOG(
-                vkBindBufferMemory(device.GetLogicalDeviceHandle(), stagingBuffer, stagingMemory, 0) == VK_SUCCESS, 
-                "Texture: Failed to bind buffer memory."
-            );
-
-			uint8_t* stagingBufferMapped;
-
-			SUCCESS_OR_LOG(
-			    vkMapMemory(device.GetLogicalDeviceHandle(), stagingMemory, 0, memReqs.size, 0, (void**)&stagingBufferMapped) == VK_SUCCESS, 
-                "Texture: Failed to map memory."
-            );
-
 			unsigned char* buffer = new unsigned char[totalBufferSize];
 			unsigned char* bufferPtr = &buffer[0];
 
@@ -232,8 +199,6 @@ namespace engine::resource
 				}
 				bufferPtr += outputSize;
 			}
-
-			memcpy(stagingBufferMapped, buffer, totalBufferSize);
 
 			VkImageCreateInfo imageCreateInfo{};
 			imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -268,24 +233,8 @@ namespace engine::resource
                 "Texture: Failed to bind image memory"
             );
 
-			VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-			VkImageSubresourceRange subresourceRange = {};
-			subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			subresourceRange.levelCount = this->mipLevels_;
-			subresourceRange.layerCount = 1;
-
-			VkImageMemoryBarrier imageMemoryBarrier{};
-			imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			imageMemoryBarrier.srcAccessMask = 0;
-			imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			imageMemoryBarrier.image = this->image_;
-			imageMemoryBarrier.subresourceRange = subresourceRange;
-			vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-
-			// Transcode and copy all image levels
+			// 异步上传：转码数据已全部在 buffer（含所有 mip），ring 切片 -> image
+			std::vector<VkBufferImageCopy> bufferCopyRegions;
 			VkDeviceSize bufferOffset = 0;
 			for (uint32_t i = 0; i < this->mipLevels_; i++) {
 				// Size calculations differ for compressed/uncompressed formats
@@ -301,24 +250,16 @@ namespace engine::resource
 				bufferCopyRegion.imageExtent.height = levelInfos[i].m_orig_height;
 				bufferCopyRegion.imageExtent.depth = 1;
 				bufferCopyRegion.bufferOffset = bufferOffset;
-
-				vkCmdCopyBufferToImage(copyCmd, stagingBuffer, this->image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bufferCopyRegion);
+				bufferCopyRegions.push_back(bufferCopyRegion);
 
 				bufferOffset += outputSize;
 			}
 
-			imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			imageMemoryBarrier.image = this->image_;
-			imageMemoryBarrier.subresourceRange = subresourceRange;
-			vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-
-            device.FlushCommandBuffer(copyCmd, true);
-
-			vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
-			vkDestroyBuffer(device.GetLogicalDeviceHandle(), stagingBuffer, nullptr);
+			// 终态 TRANSFER_SRC_OPTIMAL（KTX2 自带全部 mip，后续一般无 blit；descriptor 按此布局采样）
+			this->readyAt_ = core::StagingRingAllocator::Instance().SubmitImageCopy(
+				buffer, totalBufferSize, this->image_, bufferCopyRegions, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+			).readyAt;
+			this->imageLayout_ = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
 			delete[] buffer;
 			delete[] inputData;
@@ -366,48 +307,6 @@ namespace engine::resource
 			memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 			VkMemoryRequirements memReqs{};
 
-			VkBuffer stagingBuffer;
-			VkDeviceMemory stagingMemory;
-
-			VkBufferCreateInfo bufferCreateInfo{};
-			bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-			bufferCreateInfo.size = bufferSize;
-			bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-			bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-			SUCCESS_OR_LOG(
-                vkCreateBuffer(device.GetLogicalDeviceHandle(), &bufferCreateInfo, nullptr, &stagingBuffer) == VK_SUCCESS, 
-                "Texture: Failed to create buffer"
-            );
-
-			vkGetBufferMemoryRequirements(device.GetLogicalDeviceHandle(), stagingBuffer, &memReqs);
-			memAllocInfo.allocationSize = memReqs.size;
-			memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-			SUCCESS_OR_LOG(
-                vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &stagingMemory) == VK_SUCCESS, 
-                "Texture: Failed to allocate memory."
-            );
-
-			SUCCESS_OR_LOG(
-                vkBindBufferMemory(device.GetLogicalDeviceHandle(), stagingBuffer, stagingMemory, 0) == VK_SUCCESS, 
-                "Texture: Failed to bind buffer memory"
-            );
-
-			uint8_t* data;
-
-			SUCCESS_OR_LOG(
-                vkMapMemory(device.GetLogicalDeviceHandle(), stagingMemory, 0, memReqs.size, 0, (void**)&data) == VK_SUCCESS, 
-                "Texture: Failed to map memory"
-            );
-
-			memcpy(data, buffer, bufferSize);
-			vkUnmapMemory(device.GetLogicalDeviceHandle(), stagingMemory);
-
-			if (deleteBuffer) {
-				delete[] buffer;
-			}
-
 			VkImageCreateInfo imageCreateInfo{};
 			imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 			imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -441,25 +340,8 @@ namespace engine::resource
                 "Texture: Failed to bind image memory."
             );
 
-			VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-			VkImageSubresourceRange subresourceRange = {};
-			subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			subresourceRange.levelCount = 1;
-			subresourceRange.layerCount = 1;
-
-			{
-				VkImageMemoryBarrier imageMemoryBarrier{};
-				imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-				imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-				imageMemoryBarrier.srcAccessMask = 0;
-				imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-				imageMemoryBarrier.image = this->image_;
-				imageMemoryBarrier.subresourceRange = subresourceRange;
-				vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-			}
-
+			// 异步上传 mip0（终态 TRANSFER_SRC_OPTIMAL，衔接下方同步 blit 链；
+			// 同队列隐式提交序保证 blit 在上传完成后才执行）
 			VkBufferImageCopy bufferCopyRegion = {};
 			bufferCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			bufferCopyRegion.imageSubresource.mipLevel = 0;
@@ -469,25 +351,13 @@ namespace engine::resource
 			bufferCopyRegion.imageExtent.height = this->height_;
 			bufferCopyRegion.imageExtent.depth = 1;
 
-			vkCmdCopyBufferToImage(copyCmd, stagingBuffer, this->image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bufferCopyRegion);
-
-			{
-				VkImageMemoryBarrier imageMemoryBarrier{};
-				imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-				imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-				imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-				imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-				imageMemoryBarrier.image = this->image_;
-				imageMemoryBarrier.subresourceRange = subresourceRange;
-				vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
+			std::vector<VkBufferImageCopy> mip0Regions{ bufferCopyRegion };
+			this->readyAt_ = core::StagingRingAllocator::Instance().SubmitImageCopy(
+				buffer, bufferSize, this->image_, mip0Regions, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+			).readyAt;
+			if (deleteBuffer) {
+				delete[] buffer;
 			}
-
-            device.FlushCommandBuffer(copyCmd, true);
-
-
-			vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
-			vkDestroyBuffer(device.GetLogicalDeviceHandle(), stagingBuffer, nullptr);
 
 			// Generate the mip chain (glTF uses jpg and png, so we need to create this manually)
 			VkCommandBuffer blitCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
@@ -541,10 +411,14 @@ namespace engine::resource
 				}
 			}
 
-			subresourceRange.levelCount = this->mipLevels_;
 			this->imageLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 			{
+				VkImageSubresourceRange finalRange = {};
+				finalRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				finalRange.levelCount = this->mipLevels_;
+				finalRange.layerCount = 1;
+
 				VkImageMemoryBarrier imageMemoryBarrier{};
 				imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 				imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -552,7 +426,7 @@ namespace engine::resource
 				imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 				imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 				imageMemoryBarrier.image = this->image_;
-				imageMemoryBarrier.subresourceRange = subresourceRange;
+				imageMemoryBarrier.subresourceRange = finalRange;
 				vkCmdPipelineBarrier(blitCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
 			}
 
@@ -623,51 +497,6 @@ namespace engine::resource
         memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         VkMemoryRequirements memReqs;
 
-        // Use a separate command buffer for texture loading
-        VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-        // Create a host-visible staging buffer that contains the raw image data
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingMemory;
-
-        VkBufferCreateInfo bufferCreateInfo{};
-        bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferCreateInfo.size = tex2D.size();
-        // This buffer is used as a transfer source for the buffer copy
-        bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        SUCCESS_OR_LOG(
-            vkCreateBuffer(device.GetLogicalDeviceHandle(), &bufferCreateInfo, nullptr, &stagingBuffer) == VK_SUCCESS,
-            "Texture2D: Failed to create buffer."
-        );
-
-        // Get memory requirements for the staging buffer (alignment, memory type bits)
-        vkGetBufferMemoryRequirements(device.GetLogicalDeviceHandle(), stagingBuffer, &memReqs);
-
-        memAllocInfo.allocationSize = memReqs.size;
-        // Get memory type index for a host visible buffer
-        memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        SUCCESS_OR_LOG(
-            vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &stagingMemory) == VK_SUCCESS,
-            "Texture2D: Failed to allocate memory."
-        );
-
-        SUCCESS_OR_LOG(
-            vkBindBufferMemory(device.GetLogicalDeviceHandle(), stagingBuffer, stagingMemory, 0) == VK_SUCCESS,
-            "Texture2D: Failed to bind buffer memory."
-        );
-
-        // Copy texture data into staging buffer
-        uint8_t *data;
-        SUCCESS_OR_LOG(
-            vkMapMemory(device.GetLogicalDeviceHandle(), stagingMemory, 0, memReqs.size, 0, (void **)&data) == VK_SUCCESS,
-            "Texture2D: Failed to map memory."
-        );
-
-        memcpy(data, tex2D.data(), tex2D.size());
-        vkUnmapMemory(device.GetLogicalDeviceHandle(), stagingMemory);
-
         // Setup buffer copy regions for each mip level
         std::vector<VkBufferImageCopy> bufferCopyRegions;
         uint32_t offset = 0;
@@ -734,49 +563,11 @@ namespace engine::resource
         subresourceRange.levelCount = this->mipLevels_;
         subresourceRange.layerCount = 1;
 
-        // Image barrier for optimal image (target)
-        // Optimal image will be used as destination for the copy
-        {
-            VkImageMemoryBarrier imageMemoryBarrier{};
-            imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            imageMemoryBarrier.srcAccessMask = 0;
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            imageMemoryBarrier.image = this->image_;
-            imageMemoryBarrier.subresourceRange = subresourceRange;
-            vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-        }
-
-        // Copy mip levels from staging buffer
-        vkCmdCopyBufferToImage(
-            copyCmd,
-            stagingBuffer,
-            this->image_,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            static_cast<uint32_t>(bufferCopyRegions.size()),
-            bufferCopyRegions.data()
-        );
-
-        // Change texture image layout to shader read after all mip levels have been copied
+        // 异步上传：ring 切片 -> image，终态按调用方请求的布局
         this->imageLayout_ = imageLayout;
-        {
-            VkImageMemoryBarrier imageMemoryBarrier{};
-            imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            imageMemoryBarrier.newLayout = imageLayout;
-            imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            imageMemoryBarrier.image = this->image_;
-            imageMemoryBarrier.subresourceRange = subresourceRange;
-            vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-        }
-
-        device.FlushCommandBuffer(copyCmd, true);
-
-        // Clean up staging resources
-        vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
-        vkDestroyBuffer(device.GetLogicalDeviceHandle(), stagingBuffer, nullptr);
+        this->readyAt_ = core::StagingRingAllocator::Instance().SubmitImageCopy(
+            tex2D.data(), tex2D.size(), this->image_, bufferCopyRegions, imageLayout
+        ).readyAt;
 
         VkSamplerCreateInfo samplerCreateInfo{};
         samplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -836,51 +627,6 @@ namespace engine::resource
         VkMemoryAllocateInfo memAllocInfo{};
         memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         VkMemoryRequirements memReqs;
-        // Use a separate command buffer for texture loading
-        VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-        // Create a host-visible staging buffer that contains the raw image data
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingMemory;
-
-        VkBufferCreateInfo bufferCreateInfo{};
-        bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferCreateInfo.size = bufferSize;
-        // This buffer is used as a transfer source for the buffer copy
-        bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        SUCCESS_OR_LOG(
-            vkCreateBuffer(device.GetLogicalDeviceHandle(), &bufferCreateInfo, nullptr, &stagingBuffer) == VK_SUCCESS,
-            "Texture2D: Failed to create buffer."
-        );
-
-        // Get memory requirements for the staging buffer (alignment, memory type bits)
-        vkGetBufferMemoryRequirements(device.GetLogicalDeviceHandle(), stagingBuffer, &memReqs);
-
-        memAllocInfo.allocationSize = memReqs.size;
-        // Get memory type index for a host visible buffer
-        memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        SUCCESS_OR_LOG(
-            vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &stagingMemory) == VK_SUCCESS,
-            "Texture2D: Failed to allocate memory"
-        );
-
-        SUCCESS_OR_LOG(
-            vkBindBufferMemory(device.GetLogicalDeviceHandle(), stagingBuffer, stagingMemory, 0) == VK_SUCCESS,
-            "Texture2D: Failed to bind buffer memory"
-        );
-
-        // Copy texture data into staging buffer
-        uint8_t *data;
-        SUCCESS_OR_LOG(
-            vkMapMemory(device.GetLogicalDeviceHandle(), stagingMemory, 0, memReqs.size, 0, (void **)&data) == VK_SUCCESS,
-            "Texture2D: Failed to map memory."
-        );
-
-        memcpy(data, buffer, bufferSize);
-        vkUnmapMemory(device.GetLogicalDeviceHandle(), stagingMemory);
 
         VkBufferImageCopy bufferCopyRegion = {};
         bufferCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -936,45 +682,12 @@ namespace engine::resource
         subresourceRange.levelCount = this->mipLevels_;
         subresourceRange.layerCount = 1;
 
-        {
-            VkImageMemoryBarrier imageMemoryBarrier{};
-            imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            imageMemoryBarrier.srcAccessMask = 0;
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            imageMemoryBarrier.image = this->image_;
-            imageMemoryBarrier.subresourceRange = subresourceRange;
-            vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-        }
-
-        vkCmdCopyBufferToImage(
-            copyCmd,
-            stagingBuffer,
-            this->image_,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1,
-            &bufferCopyRegion
-        );
-
+        // 异步上传：ring 切片 -> image，终态按调用方请求的布局
         this->imageLayout_ = imageLayout;
-        {
-            VkImageMemoryBarrier imageMemoryBarrier{};
-            imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            imageMemoryBarrier.newLayout = imageLayout;
-            imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            imageMemoryBarrier.image = this->image_;
-            imageMemoryBarrier.subresourceRange = subresourceRange;
-            vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-        }
-
-        device.FlushCommandBuffer(copyCmd, true);
-
-        // Clean up staging resources
-        vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
-        vkDestroyBuffer(device.GetLogicalDeviceHandle(), stagingBuffer, nullptr);
+        std::vector<VkBufferImageCopy> regions{ bufferCopyRegion };
+        this->readyAt_ = core::StagingRingAllocator::Instance().SubmitImageCopy(
+            buffer, bufferSize, this->image_, regions, imageLayout
+        ).readyAt;
 
         // Create sampler
         VkSamplerCreateInfo samplerCreateInfo = {};
@@ -1055,50 +768,6 @@ namespace engine::resource
         memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         VkMemoryRequirements memReqs;
 
-        // Create a host-visible staging buffer that contains the raw image data
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingMemory;
-
-        VkBufferCreateInfo bufferCreateInfo{};
-        bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferCreateInfo.size = texCube.size();
-        // This buffer is used as a transfer source for the buffer copy
-        bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        SUCCESS_OR_LOG(
-            vkCreateBuffer(device.GetLogicalDeviceHandle(), &bufferCreateInfo, nullptr, &stagingBuffer) == VK_SUCCESS,
-            "Texture2D: Failed to create buffer."
-        );
-
-        // Get memory requirements for the staging buffer (alignment, memory type bits)
-        vkGetBufferMemoryRequirements(device.GetLogicalDeviceHandle(), stagingBuffer, &memReqs);
-
-        memAllocInfo.allocationSize = memReqs.size;
-        // Get memory type index for a host visible buffer
-        memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        SUCCESS_OR_LOG(
-            vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &stagingMemory) == VK_SUCCESS,
-            "Texture2D: Failed to allocate memory."
-        );
-
-        SUCCESS_OR_LOG(
-            vkBindBufferMemory(device.GetLogicalDeviceHandle(), stagingBuffer, stagingMemory, 0) == VK_SUCCESS,
-            "Texture2D: Failed to bind buffer memory."
-        );
-
-        // Copy texture data into staging buffer
-        uint8_t *data;
-
-        SUCCESS_OR_LOG(
-            vkMapMemory(device.GetLogicalDeviceHandle(), stagingMemory, 0, memReqs.size, 0, (void **)&data) == VK_SUCCESS,
-            "Texture2D: Failed to map memory."
-        );
-
-        memcpy(data, texCube.data(), texCube.size());
-        vkUnmapMemory(device.GetLogicalDeviceHandle(), stagingMemory);
-
         // Setup buffer copy regions for each face including all of it's miplevels
         std::vector<VkBufferImageCopy> bufferCopyRegions;
         size_t offset = 0;
@@ -1164,10 +833,6 @@ namespace engine::resource
             "Texture2D: Failed to bind image memory."
         );
 
-        // Use a separate command buffer for texture loading
-        VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-
         // Image barrier for optimal image (target)
         // Set initial layout for all array layers (faces) of the optimal (target) tiled texture
         VkImageSubresourceRange subresourceRange = {};
@@ -1176,42 +841,11 @@ namespace engine::resource
         subresourceRange.levelCount = this->mipLevels_;
         subresourceRange.layerCount = 6;
 
-        {
-            VkImageMemoryBarrier imageMemoryBarrier{};
-            imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            imageMemoryBarrier.srcAccessMask = 0;
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            imageMemoryBarrier.image = this->image_;
-            imageMemoryBarrier.subresourceRange = subresourceRange;
-            vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-        }
-
-        // Copy the cube map faces from the staging buffer to the optimal tiled image
-        vkCmdCopyBufferToImage(
-            copyCmd,
-            stagingBuffer,
-            this->image_,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            static_cast<uint32_t>(bufferCopyRegions.size()),
-            bufferCopyRegions.data());
-
-        // Change texture image layout to shader read after all faces have been copied
+        // 异步上传：ring 切片 -> cube image（6 face × mips），终态按调用方请求的布局
         this->imageLayout_ = imageLayout;
-        {
-            VkImageMemoryBarrier imageMemoryBarrier{};
-            imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            imageMemoryBarrier.newLayout = imageLayout;
-            imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            imageMemoryBarrier.image = this->image_;
-            imageMemoryBarrier.subresourceRange = subresourceRange;
-            vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageMemoryBarrier);
-        }
-
-        device.FlushCommandBuffer(copyCmd, true);
+        this->readyAt_ = core::StagingRingAllocator::Instance().SubmitImageCopy(
+            texCube.data(), texCube.size(), this->image_, bufferCopyRegions, imageLayout
+        ).readyAt;
 
         // Create sampler
         VkSamplerCreateInfo samplerCreateInfo{};
@@ -1249,10 +883,6 @@ namespace engine::resource
             vkCreateImageView(device.GetLogicalDeviceHandle(), &viewCreateInfo, nullptr, &this->view_) == VK_SUCCESS,
             "Texture2D: Failed to create image view."
         );
-
-        // Clean up staging resources
-        vkFreeMemory(device.GetLogicalDeviceHandle(), stagingMemory, nullptr);
-        vkDestroyBuffer(device.GetLogicalDeviceHandle(), stagingBuffer, nullptr);
 
         // Update descriptor image info member that can be used for setting up descriptor sets
         UpdateDescriptor();

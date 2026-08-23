@@ -233,6 +233,10 @@ namespace engine::resource
 			virtual void 								UpdateMeshDataBuffer(uint32_t index) = 0;
 			virtual void 								CreateMaterialBuffer() = 0;
 			virtual void 								CreateMeshDataBuffer() = 0;
+
+			// GPU 上传是否已全部完成（顶点/索引/材质/纹理回执达成）。
+			// 默认 true：未走异步上传的模型视为就绪；GLTFModel 覆盖为回执检查
+			virtual bool 								IsReady() const { return true; }
 	};
 
 	class GLTFModel : public Model 
@@ -263,6 +267,7 @@ namespace engine::resource
 				float 		emissiveStrength;
 			};
 			engine::core::Buffer 					shaderMaterialBuffer_;
+			uint64_t 								materialReadyAt_ = 0;   // Material SSBO 上传完成 timeline 值
 
 			struct alignas(16) ShaderMeshData 
 			{
@@ -342,6 +347,7 @@ namespace engine::resource
 			void 								CreateMaterialBuffer() override;
 			void 								CreateMeshDataBuffer() override;
 			void 								UpdateMeshDataBuffer(uint32_t index) override;
+			bool 								IsReady() const override;
 			std::unique_ptr<Model> 				Clone() override;
 			glm::mat4 							GetAABBBox() override;
 			uint32_t 							GetMaterialCount() override;

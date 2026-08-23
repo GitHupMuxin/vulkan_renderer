@@ -62,9 +62,10 @@ namespace engine::scene
         auto& rm = resource::ResourceManager::Instance();
 
         // 计算默认 transform 需要 model 的 AABB（此时 handle 一定有效，因为刚加载）
+        // PeekModel：上传在途（Uploading）也算资源存在；GetAABBBox 是纯 CPU 数据，无需 GPU 就绪
         if (transform == glm::mat4(1.0f))
         {
-            resource::Model* model = rm.GetModel(modelHandle);
+            resource::Model* model = rm.PeekModel(modelHandle);
             if (model == nullptr)
             {
                 LOG_WARN("Scene: AddObject called with invalid model handle, skipped.");

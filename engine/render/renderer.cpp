@@ -3,6 +3,9 @@
 #include "engine/resource/resource_manager.h"
 #include "engine/core/loader.h"
 #include "engine/core/buffer.h"
+#include "engine/core/staging_ring_allocator.h"
+
+#include <algorithm>
 
 namespace engine::render
 {
@@ -254,6 +257,14 @@ namespace engine::render
 			// One SSBO for the shader material buffer and one SSBO for the mesh data buffer
 			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount.storageBufferCount }
 		};
+
+		// 过滤 descriptorCount 为 0 的项（VUID-VkDescriptorPoolSize-descriptorCount-00302 要求 > 0）。
+		// 场景模型在 PrepareFrame 之后才加载，此时 storageBufferCount 可能为 0，空项不应提交。
+		poolSizes.erase(
+			std::remove_if(poolSizes.begin(), poolSizes.end(),
+				[](const VkDescriptorPoolSize& size) { return size.descriptorCount == 0; }),
+			poolSizes.end());
+
 		VkDescriptorPoolCreateInfo descriptorPoolCI{};
 		descriptorPoolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 		descriptorPoolCI.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
@@ -776,6 +787,9 @@ namespace engine::render
 		// 1) 此时可安全读取其 timestamp 结果
 		// 2) 通知资源管理器推进帧号，清理到期的延迟删除资源（GPU 已不再使用它们）
 		resource::ResourceManager::Instance().OnFrameCompleted();
+
+		// 每帧回收 staging ring 已完成的上传（空闲期也还账，回绕等待窗口最小化）
+		core::StagingRingAllocator::Instance().Tick();
 
 		// 第一帧（或该 FrameContext 尚未提交过）时 query 从未被 reset，必须跳过读取
 		if (this->timestampQuerySupported_ && frameContext.hasSubmittedFrame_)

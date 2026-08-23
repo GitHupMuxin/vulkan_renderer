@@ -51,6 +51,7 @@ namespace engine::resource
 		uint32_t 				layerCount_;
 		VkDescriptorImageInfo 	descriptor_;
 		VkSampler 				sampler_ = VK_NULL_HANDLE;
+		uint64_t 				readyAt_ = 0;   // 上传完成 timeline 值（流式加载就绪判断用）
 
 		Texture() = default;
 		virtual ~Texture();

@@ -214,37 +214,36 @@ SUCCESS_OR_LOG(
 - 修改前先检查 `git status` 和实际 diff。用户可能同时在 VS Code 编辑文件；遇到“磁盘内容更新”冲突时暂停修改，禁止覆盖用户未保存缓冲区。
 - Commit、Push、Tag 继续视为三个独立动作。实际阶段 tag 采用用户选择的短名称；Stage 0/1 已使用 `stage-0`、`stage-1`。
 
-## 当前交接状态（2026-08-07）
+## 当前交接状态（2026-08-24）
 
 ### Git 状态
 
-- `stage-0` 指向 `ead68b1`，已推送。
-- `stage-1` 指向 `160b872`，已推送。
-- `stage-2` 指向 `4e5ae83`，已推送；`origin/main` 已更新到该提交。
-- 工作区无未提交修改（`imgui.ini` 为运行时生成文件，已还原）。
+- `stage-0` → `ead68b1`，`stage-1` → `160b872`，`stage-2` → `4e5ae83`，均已推送。
+- `arch-stage-3a-resource-handles` / `arch-stage-3b-render-scene` / `arch-stage-4a-resource-lifetime` / `arch-stage-4b-upload-context` / `arch-stage-4c-staging-ring` 均已创建并推送。
+- 工作区有 4C 收尾补丁的未提交修改（staging ring 收尾 + Uploading→Ready 状态机），待用户 review 后提交。
 
-### Stage 2 已完成（GPU 可观测性）
+### Stage 4C 已完成（Staging Ring 异步上传，2026-08-24 收尾）
 
-1. Debug Messenger：`VK_EXT_debug_utils` 替换 `VK_EXT_debug_report`。
-2. Object Naming：`Device::SetObjectName()`，命名 CommandPool/PipelineCache/RenderPass/CB/Fence/Semaphore/Framebuffer/QueryPool；resize 后重建对象重新命名。
-3. Pass Label：Main Frame / Skybox / PBR 三段标签。
-4. Timestamp Query：每 FrameContext 一个 QueryPool（`kGpuQueryCount = 1 + 8*2`），Render() 中 Pass 前后写 timestamp，Fence 确认后安全读取。
-5. ImGui：右上角 GPU Timings 面板显示 Frame/Skybox/PBR 耗时。
+1. **`PendingCopy` → `PendingUpload`**：队列项只留生命周期记账（submitValue/CB/slot/ownedBuffer/ownedMemory），录制信息提交前消费，无 kind/variant。
+2. **`SubmitImageCopy`**：实现 buffer→image 上传。签名 `(src, srcSize, dst, regions, finalLayout, oldLayout)`；region 偏移统一加 ring 切片起点；barrier 范围从 regions 推导（baseMip/baseLayer 的 min/max）；一对 barrier 夹 N 条 `vkCmdCopyBufferToImage`。
+3. **大上传回退 `SubmitOversizedBufferCopy`**：`size > ring 容量(64MB)` 时创建一次性 staging，挂 timeline 延迟销毁，`FreePendingCopy` 里销毁。
+4. **`Tick()`**：每帧（Renderer BeginFrame wait fence 后）回收已完成上传，空闲期也还账。
+5. **texture.cpp 5 处 + model.cpp 2 处迁移**：上传全走 ring（blit 链保持同步，同队列隐式提交序衔接）。
+6. **`ResourceState::Uploading` 状态机**：`LoadModel` 提交上传后 `Uploading`（不等待），`OnFrameCompleted` 检查 `IsReady()`（顶点/索引/材质/纹理回执全达成）转 `Ready`。`LoadModel` 末尾 `WaitAll` 已删；`Init` 末尾保留（系统资源 skybox/空纹理兜底）。
+7. **`PeekModel`**：只校验 index+generation 不查 state==Ready。用于"资源存在性"场景（descriptor 分配、RenderItem 生成、AddObject 算 AABB），与"渲染就绪"（GetModel，DrawQueue 门控）解耦。
+8. **`RenderScene::modelHandles`**：场景引用的全部模型显式注册，descriptor 分配/就绪轮询遍历用，不再从 RenderItem 队列收集（Uploading 模型不产生 RenderItem 但必须分配 descriptor）。
 
-### Stage 2 踩坑记录（重要）
+### Stage 4C 踩坑记录（重要）
 
-- **`vkResetQueryPool` 是 Vulkan 1.2 函数**，本工程 `apiVersion = VK_API_VERSION_1_0`，直接调用会因函数指针为 null 闪退。只用 `vkCmdResetQueryPool`（1.0）。
-- **`vkCmdResetQueryPool` 禁止在 render pass 内部调用**（VUID-vkCmdResetQueryPool-renderpass），必须放在 `vkCmdBeginRenderPass` 之前。
-- **`vkGetQueryPoolResults` 无 WAIT_BIT 时，请求范围内任一 query 未写入 → 整体返回 `VK_NOT_READY`**。只读取实际写入的 query 数（`1 + renderPasses_.size()*2`），不要读预留但未写入的槽位。
-- 第一帧读取 query 会报 "query not reset"：用 `FrameContext::hasSubmittedFrame_` 标志，帧提交成功后才允许读取。
-- **MSAA 配置双源问题**：`RendererDescription.multiSampling_` 与 `DeviceSetting.multiSampling_` 独立存在，管线/clearValues 读 Device，RenderPass/Framebuffer 读 RendererDescription。**修复**：Device 为唯一权威源，`Renderer::Init()` 开头 `rendererDescription_.multiSampling_ = Device::GetSetting().multiSampling_`。
-- **`rasterizationSamples` 必须有 else 分支**：MSAA 关闭时 `if (multiSampling_)` 不成立 → 值为 0 → VUID 错误。SkyBox/PBR/UI 三处管线均改为三元表达式 `msaa ? sampleCount_ : VK_SAMPLE_COUNT_1_BIT`。
-- **`RendererDescription.enableValidation_` 是死字段**：从未被读取，validation 只由 `DeviceSetting.validation_` 控制。已删除。
-- **`params_.prefilteredCubeMipLevels` 从未被赋值**：导致 shader 中 `lod = roughness * prefilteredCubeMipLevels` 使用垃圾值，roughness 大时 specular IBL 明显错误。修复：`Scene::Init()` 中 `LoadAsset()` 后从 `cubeMap_->GetPrefilteredCubeMipLevels()` 填入。
+- **`CreateDescriptorPool` 的 poolSizes 必须过滤 descriptorCount==0 的项**（VUID-VkDescriptorPoolSize-descriptorCount-00302）。场景模型在 `PrepareFrame` 之后才加载，若从空 RenderScene 计数，STORAGE_BUFFER 项为 0 → validation 报错。修复：`poolSizes.erase(std::remove_if(...))`。
+- **descriptor 分配与渲染就绪必须解耦**：descriptor set 应在 `PrepareFrame` 无条件分配（模型注定要渲染），用 `PeekModel`；渲染门控（`GetModel` state==Ready）只在 DrawQueue。二者耦合会导致"模型 Uploading → 无 RenderItem → descriptor 永不分配 → 就绪后也不渲染"。
+- **`Scene::AddObject` 也要用 `PeekModel`**：它用 AABB 算默认 transform（纯 CPU），`GetModel` 会因 Uploading 返回 nullptr → 模型被跳过 → 日志 "AddObject called with invalid model handle"。状态机改造后所有"只查资源存在"的调用点都要从 `GetModel` 改 `PeekModel`。
+- **Uploading→Ready 在 `OnFrameCompleted` 转**：`PrepareFrame` 时 `OnFrameCompleted` 从未运行过（渲染循环未开始），模型必然还是 Uploading——descriptor 分配必须不依赖它。
+- **`LoadModel` 摘 `WaitAll` 后**：`Init` 里 skybox/空纹理的异步上传原本蹭 LoadModel 的 WaitAll 兜底，摘掉后必须显式在 `Init` 末尾 `WaitAll`（系统资源不走 Handle 状态机，无门控）。
 
-### 下一步：Stage 3A（Resource Handle）
+### 下一步：Stage 5A（Descriptor Allocator）
 
-强类型 Handle、index + generation、资源状态查询。开始前先检查工作区、最新 Tag 和上一阶段验收结果，给出具体方案供用户审查后再动手。
+Persistent Pool / Frame Pool 分离、耗尽扩容与安全 reset。当前一次性 pool（按 PrepareFrame 时场景模型计数）无法处理运行时新增模型，是 5A 要解决的短板。开始前先检查工作区、最新 Tag 和上一阶段验收结果，给出具体方案供用户审查后再动手。
 
 ## 构建系统
 - 构建工具：CMake + Ninja

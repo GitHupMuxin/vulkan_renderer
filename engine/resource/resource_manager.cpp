@@ -1,7 +1,7 @@
 #include <chrono>
 #include "engine/resource/model.h"
 #include "engine/resource/resource_manager.h"
-#include "engine/core/upload_context.h"
+#include "engine/core/staging_ring_allocator.h"
 
 
 namespace engine::resource
@@ -224,7 +224,7 @@ namespace engine::resource
         this->modelSlots_.emplace_back(std::move(slot));
 
         // 异步上传已提交，等待完成确保该模型立即可用（初始化场景一次性确认）
-        core::UploadContext::Instance().WaitAll();
+        core::StagingRingAllocator::Instance().WaitAll();
 
         return ModelHandle{ static_cast<uint32_t>(this->modelSlots_.size() - 1), 0 };
     }

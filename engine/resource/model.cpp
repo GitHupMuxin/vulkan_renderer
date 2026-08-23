@@ -15,7 +15,7 @@
 
 #include "engine/utils/log.h"
 #include "engine/resource/model.h"
-#include "engine/core/upload_context.h"
+#include "engine/core/staging_ring_allocator.h"
 
 namespace engine::resource
 {
@@ -291,19 +291,19 @@ namespace engine::resource
 		{
 			vkDestroyBuffer(device.GetLogicalDeviceHandle(), this->vertices_.buffer, nullptr);
 			vkFreeMemory(device.GetLogicalDeviceHandle(), this->vertices_.memory, nullptr);
-			vkDestroyFence(device.GetLogicalDeviceHandle(), this->vertices_.fence, nullptr);
+
 			this->vertices_.buffer = VK_NULL_HANDLE;
 			this->vertices_.memory = VK_NULL_HANDLE;
-			this->vertices_.fence = VK_NULL_HANDLE;
+			this->vertices_.readyAt = 0;
 		}
 		if (this->indices_.buffer != VK_NULL_HANDLE) 
 		{
 			vkDestroyBuffer(device.GetLogicalDeviceHandle(), this->indices_.buffer, nullptr);
 			vkFreeMemory(device.GetLogicalDeviceHandle(), this->indices_.memory, nullptr);
-			vkDestroyFence(device.GetLogicalDeviceHandle(), this->indices_.fence, nullptr);
+
 			this->indices_.buffer = VK_NULL_HANDLE;
 			this->indices_.memory = VK_NULL_HANDLE;
-			this->indices_.fence = VK_NULL_HANDLE;
+			this->indices_.readyAt = 0;
 		}
 		for (auto& texture : this->textures_) 
 		{
@@ -1128,21 +1128,30 @@ namespace engine::resource
 
 		assert(vertexBufferSize > 0);
 
-		// 异步上传顶点/索引（UploadContext 内部管理 staging，提交不等待）
+		// ① 目标 buffer 由调用方创建（DEVICE_LOCAL，GPU 专属；谁创建谁拥有）
 		// 顶点 buffer
-		auto vertexUpload = core::UploadContext::Instance().UploadData(
-			loaderInfo.vertexBuffer, vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-		this->vertices_.buffer = vertexUpload.buffer;
-		this->vertices_.memory = vertexUpload.memory;
-		this->vertices_.fence = vertexUpload.fence;
-
+		core::Device::Instance().CreateBuffer(
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			vertexBufferSize, &this->vertices_.buffer, &this->vertices_.memory
+		);
 		// 索引 buffer
 		if (indexBufferSize > 0) {
-			auto indexUpload = core::UploadContext::Instance().UploadData(
-				loaderInfo.indexBuffer, indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-			this->indices_.buffer = indexUpload.buffer;
-			this->indices_.memory = indexUpload.memory;
-			this->indices_.fence = indexUpload.fence;
+			core::Device::Instance().CreateBuffer(
+				VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				indexBufferSize, &this->indices_.buffer, &this->indices_.memory
+			);
+		}
+
+		// ② 异步搬运（ring 内部 staging → 目标，提交不等待；回执 = timeline 值）
+		this->vertices_.readyAt = core::StagingRingAllocator::Instance().SubmitBufferCopy(
+			loaderInfo.vertexBuffer, vertexBufferSize, this->vertices_.buffer
+		).readyAt;
+		if (indexBufferSize > 0) {
+			this->indices_.readyAt = core::StagingRingAllocator::Instance().SubmitBufferCopy(
+				loaderInfo.indexBuffer, indexBufferSize, this->indices_.buffer
+			).readyAt;
 		}
 
 		delete[] loaderInfo.vertexBuffer;
@@ -1352,13 +1361,13 @@ namespace engine::resource
 			"GLTFModel: Failed to create device-local buffer for material SSBO.");
 
 		// Copy from staging buffer to device-local buffer
-		VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+		VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
 
 		VkBufferCopy copyRegion{};
 		copyRegion.size = bufferSize;
 		vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, this->shaderMaterialBuffer_.buffer, 1, &copyRegion);
 
-		core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
+		device.FlushCommandBuffer(copyCmd, true);
 
 		stagingBuffer.device = device.GetLogicalDeviceHandle();
 		stagingBuffer.Destroy();
@@ -1413,13 +1422,13 @@ namespace engine::resource
 				);
 
 				// Copy from staging buffers
-				VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+				VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
 
 				VkBufferCopy copyRegion{};
 				copyRegion.size = bufferSize;
 				vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, shaderMeshDataBuffer.buffer, 1, &copyRegion);
 				
-				core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
+				device.FlushCommandBuffer(copyCmd, true);
 
 				stagingBuffer.device = device.GetLogicalDeviceHandle();
 				stagingBuffer.Destroy();
@@ -1462,13 +1471,13 @@ namespace engine::resource
 			);
 
 			// Copy from staging buffers
-			VkCommandBuffer copyCmd = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+			VkCommandBuffer copyCmd = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
 			
 			VkBufferCopy copyRegion{};
 			copyRegion.size = bufferSize;
 			vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, this->shaderMeshDataBuffers_[index].buffer, 1, &copyRegion);
 
-			core::UploadContext::Instance().EndSingleTimeCommand(copyCmd);
+			device.FlushCommandBuffer(copyCmd, true);
 
 			stagingBuffer.device = device.GetLogicalDeviceHandle();
 			stagingBuffer.Destroy();

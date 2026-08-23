@@ -95,7 +95,7 @@ namespace engine::core
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         appInfo.pApplicationName = "";
-        appInfo.apiVersion = VK_API_VERSION_1_0;
+        appInfo.apiVersion = VK_API_VERSION_1_3;
 
         // std::vector<const char* > instanceExtension = { VK_KHR_SURFACE_EXTENSION_NAME };
         for (auto& it : this->settings_.constInstanceExtensions_)
@@ -304,76 +304,76 @@ namespace engine::core
         return true;
     }
             
-    // VkCommandBuffer Device::CreateCommandBuffer(VkCommandBufferLevel level, bool begin)
-    // {
-    //     VkCommandBufferAllocateInfo cmdBufAllocateInfo{};
-    //     cmdBufAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    //     cmdBufAllocateInfo.commandPool = this->commandPool_;
-    //     cmdBufAllocateInfo.level = level;
-    //     cmdBufAllocateInfo.commandBufferCount = 1;
+    VkCommandBuffer Device::CreateCommandBuffer(VkCommandBufferLevel level, bool begin)
+    {
+        VkCommandBufferAllocateInfo cmdBufAllocateInfo{};
+        cmdBufAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdBufAllocateInfo.commandPool = this->commandPool_;
+        cmdBufAllocateInfo.level = level;
+        cmdBufAllocateInfo.commandBufferCount = 1;
 
-    //     VkCommandBuffer cmdBuffer;
-    //     SUCCESS_OR_LOG(
-    //         vkAllocateCommandBuffers(this->logicalDevice_.GetDeviceHandle(), &cmdBufAllocateInfo, &cmdBuffer) == VK_SUCCESS,
-    //         "Device: Failed to create command buffer."
-    //     );
+        VkCommandBuffer cmdBuffer;
+        SUCCESS_OR_LOG(
+            vkAllocateCommandBuffers(this->logicalDevice_.GetDeviceHandle(), &cmdBufAllocateInfo, &cmdBuffer) == VK_SUCCESS,
+            "Device: Failed to create command buffer."
+        );
 
-    //     // If requested, also start recording for the new command buffer
-    //     if (begin) 
-    //     {
-    //         VkCommandBufferBeginInfo commandBufferBI{};
-    //         commandBufferBI.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    //         SUCCESS_OR_LOG(
-    //             vkBeginCommandBuffer(cmdBuffer, &commandBufferBI) == VK_SUCCESS,
-    //             "Device: Failed to begin command buffer."
-    //         );
-    //     }
+        // If requested, also start recording for the new command buffer
+        if (begin) 
+        {
+            VkCommandBufferBeginInfo commandBufferBI{};
+            commandBufferBI.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            SUCCESS_OR_LOG(
+                vkBeginCommandBuffer(cmdBuffer, &commandBufferBI) == VK_SUCCESS,
+                "Device: Failed to begin command buffer."
+            );
+        }
 
-    //     return cmdBuffer;
-    // }
+        return cmdBuffer;
+    }
     
-    // bool Device::FlushCommandBuffer(VkCommandBuffer commandBuffer, bool free)
-    // {
-    //     SUCCESS_OR_LOG(
-    //         vkEndCommandBuffer(commandBuffer) == VK_SUCCESS,
-    //         "Device: Failed to end command buffer."
-    //     );
+    bool Device::FlushCommandBuffer(VkCommandBuffer commandBuffer, bool free)
+    {
+        SUCCESS_OR_LOG(
+            vkEndCommandBuffer(commandBuffer) == VK_SUCCESS,
+            "Device: Failed to end command buffer."
+        );
 
-    //     VkSubmitInfo submitInfo{};
-    //     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    //     submitInfo.commandBufferCount = 1;
-    //     submitInfo.pCommandBuffers = &commandBuffer;
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
 
-    //     // Create fence to ensure that the command buffer has finished executing
-    //     VkFenceCreateInfo fenceInfo{};
-    //     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    //     VkFence fence;
+        // Create fence to ensure that the command buffer has finished executing
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence;
 
-    //     SUCCESS_OR_LOG(
-    //         vkCreateFence(this->logicalDevice_.GetDeviceHandle(), &fenceInfo, nullptr, &fence) == VK_SUCCESS,
-    //         "Device: Failed to create fence."
-    //     );
+        SUCCESS_OR_LOG(
+            vkCreateFence(this->logicalDevice_.GetDeviceHandle(), &fenceInfo, nullptr, &fence) == VK_SUCCESS,
+            "Device: Failed to create fence."
+        );
 
-    //     // Submit to the queue
-    //     SUCCESS_OR_LOG(
-    //         vkQueueSubmit(this->GetGraphicsQueue(), 1, &submitInfo, fence) == VK_SUCCESS,
-    //         "Device: Failed to submit queue."
-    //     );
-    //     // Wait for the fence to signal that command buffer has finished executing
-    //     SUCCESS_OR_LOG(
-    //         vkWaitForFences(this->logicalDevice_.GetDeviceHandle(), 1, &fence, VK_TRUE, 100000000000) == VK_SUCCESS,
-    //         "Device: Failed to wait for fences."
-    //     );
+        // Submit to the queue
+        SUCCESS_OR_LOG(
+            vkQueueSubmit(this->GetGraphicsQueue(), 1, &submitInfo, fence) == VK_SUCCESS,
+            "Device: Failed to submit queue."
+        );
+        // Wait for the fence to signal that command buffer has finished executing
+        SUCCESS_OR_LOG(
+            vkWaitForFences(this->logicalDevice_.GetDeviceHandle(), 1, &fence, VK_TRUE, 100000000000) == VK_SUCCESS,
+            "Device: Failed to wait for fences."
+        );
 
-    //     vkDestroyFence(this->logicalDevice_.GetDeviceHandle(), fence, nullptr);
+        vkDestroyFence(this->logicalDevice_.GetDeviceHandle(), fence, nullptr);
 
-    //     if (free) 
-    //     {
-    //         vkFreeCommandBuffers(this->logicalDevice_.GetDeviceHandle(), this->commandPool_, 1, &commandBuffer);
-    //     }
+        if (free) 
+        {
+            vkFreeCommandBuffers(this->logicalDevice_.GetDeviceHandle(), this->commandPool_, 1, &commandBuffer);
+        }
 
-    //     return true;
-    // }
+        return true;
+    }
 
 
 

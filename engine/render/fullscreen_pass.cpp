@@ -1,5 +1,5 @@
 #include "engine/core/loader.h"
-#include "engine/core/upload_context.h"
+#include "engine/core/staging_ring_allocator.h"
 #include "engine/render/fullscreen_pass.h"
 #include "engine/utils/log.h"
 
@@ -337,7 +337,7 @@ namespace engine::render
 		renderPassBeginInfo.pClearValues = clearValues;
 		renderPassBeginInfo.framebuffer = framebuffer;
 
-		VkCommandBuffer cmdBuf = core::UploadContext::Instance().BeginSingleTimeCommand(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+		VkCommandBuffer cmdBuf = device.CreateCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
 
 		vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -364,7 +364,7 @@ namespace engine::render
 
 		vkCmdDraw(cmdBuf, 3, 1, 0, 0);
 		vkCmdEndRenderPass(cmdBuf);
-		core::UploadContext::Instance().EndSingleTimeCommand(cmdBuf);
+		device.FlushCommandBuffer(cmdBuf, true);
 
 		vkQueueWaitIdle(core::Device::Instance().GetGraphicsQueue());
 

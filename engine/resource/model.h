@@ -278,7 +278,7 @@ namespace engine::resource
 			{
 				VkBuffer 		buffer = VK_NULL_HANDLE;
 				VkDeviceMemory	memory;
-				VkFence			fence = VK_NULL_HANDLE;   // 上传完成信号（异步加载用）
+				uint64_t		readyAt = 0;   // 上传完成 timeline 值（流式加载就绪判断用）
 			};
 			Vertices 						vertices_;
 
@@ -286,7 +286,7 @@ namespace engine::resource
 			{
 				VkBuffer 		buffer = VK_NULL_HANDLE;
 				VkDeviceMemory 	memory;
-				VkFence			fence = VK_NULL_HANDLE;   // 上传完成信号（异步加载用）
+				uint64_t		readyAt = 0;   // 上传完成 timeline 值（流式加载就绪判断用）
 			};
 			Indices							indices_;
 

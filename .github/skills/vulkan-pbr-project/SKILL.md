@@ -15,10 +15,10 @@ vulkan_pbr/
 │   └── ui/                     ← ImGui 调试 UI（app 专属，不在引擎中）
 │
 ├── engine/                     ← 引擎层：跨项目可复用的核心
-│   ├── core/                   ← 设备/交换链/工具/宏（基础层）
-│   ├── resource/               ← 资源层：纹理 + glTF 模型加载
-│   ├── scene/                  ← 场景层：Camera
-│   ├── render/                 ← 渲染层：Renderer + Pass 框架
+│   ├── core/                   ← 设备/交换链/StagingRing/工具/宏（基础层）
+│   ├── resource/               ← 资源层：纹理 + glTF 模型 + ResourceManager(Handle 池)
+│   ├── scene/                  ← 场景层：Camera + SceneExtractor
+│   ├── render/                 ← 渲染层：Renderer + Pass 框架 + RenderScene
 │   ├── platform/               ← 平台层：窗口抽象（PIMPL 模式）
 │   └── utils/                  ← 工具层：日志（Logger 单例）
 │
@@ -51,71 +51,22 @@ utils/  日志
 
 ## 核心设计决策
 
-### include 路径
-所有 `#include` 从项目根（`vulkan_pbr/`）写起，搜索根由 `target_include_directories(engine PUBLIC ..)` 保证。
-
-```cpp
-#include "engine/core/device.h"        // ✅ 正确
-#include "engine/resource/model.h"     // ✅ 正确
-#include "app/application/application.h" // ✅ 正确
-```
-
-### 命名空间
-- `engine::core` — Vulkan 设备、交换链、Buffer 工具
-- `engine::resource` — 纹理、模型资源
-- `engine::resource::vkglTF` — glTF 模型解析命名空间
-- `engine::scene` — 相机等场景数据
-- `engine::render` — Pass、Renderer 框架
-- `engine::platform` — 窗口抽象
-- `engine::utils` — Logger 单例
-- `app` — 应用层入口
-
-### 窗口抽象（PIMPL 模式）
-`engine/platform/window.h` 使用 PIMPL 隐藏 Win32 句柄：
-```cpp
-class Window {
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-public:
-    void Init(void* hinstance, void* wndproc);
-    void* NativeHandle() const;
-};
-```
-
-### 渲染框架（Pass 模式）
-```
-Renderer（帧循环骨架）
-  ├── swapchain / commandPool / syncObjects
-  └── std::vector<std::unique_ptr<RenderPass>> passes_
-
-RenderPass（抽象基类）
-  ├── virtual void Setup(const RenderPassInitInfo& info)
-  ├── virtual void Execute(VkCommandBuffer cmd, uint32_t frameIndex)
-  └── virtual void Cleanup(VkDevice device)
-```
-
-Renderer 不关心 Pass 具体画什么，只按序执行。
-
-### 日志系统
-全局单例 `engine::utils::Logger`，宏封装：
-```cpp
-LOG_INFO(msg)    // 流式写法，如 LOG_INFO("Failed: " << res)
-LOG_WARN(msg)
-LOG_ERROR(msg)
-LOG_FATAL(msg)   // 自动 abort
-```
+- **include 路径**：从项目根写起（`#include "engine/core/device.h"`），搜索根由 `target_include_directories(engine PUBLIC ..)` 保证。
+- **命名空间**：`engine::core / resource / scene / render / platform / utils`；应用层 `app`。
+- **窗口抽象**：`engine/platform/window.h` 用 PIMPL 隐藏 Win32 句柄。
+- **渲染框架（Pass 模式）**：Renderer 管"画框"（swapchain/commandPool/sync/framebuffer/统一 descriptor pool），按序执行 `std::vector<std::unique_ptr<RenderPass>>`，不关心 Pass 具体画什么；Pass 管"画什么"（layout/pipeline/Execute）。
+- **资源管理**：`ResourceManager` 单例 + 强类型 Handle（index+generation）+ `ResourceState` 状态机（Free/Uploading/Ready/PendingDelete）+ 延迟删除队列。
+- **日志**：全局单例 `engine::utils::Logger`，宏 `LOG_INFO/LOG_WARN/LOG_ERROR/LOG_FATAL`（流式写法，FATAL 自动 abort）。
 
 ## 代码排版与语义层级
 
 优先遵循项目现有风格，并吸收 Google C++ 规范中关于命名清晰、类型安全、资源生命周期和可读性的原则；不要机械套用 Google 的 80 列限制或大括号格式。
 
-### 语句与代码块
+### 语句与调用
 
-- 圆括号 `()` 表示一次函数调用或一条表达式的参数范围。
-- 花括号 `{}` 表示函数、条件、循环等代码块。
-- 控制流和函数的左右花括号独立占行，以明确代码块边界。
-- 多行调用的结束符 `);` 独立占行，以明确整条语句结束。
-- 一个完整操作结束后留空行；不要在同一操作的内部随意插入空行。
+- 花括号独立占行；多行调用的结束符 `);` 独立占行。
+- 一个完整操作结束后留空行，不在操作内部随意插空行。
+- 长调用不机械逐参数拆行：按外层参数的**语义**分行；拆分产生大量短小不对称行、降低可读性时，保留完整表达式。
 
 ```cpp
 if (condition)
@@ -124,32 +75,10 @@ if (condition)
 }
 
 SUCCESS_OR_LOG(
-    CreateResource(...) == VK_SUCCESS,
-    "Failed to create resource"
-);
-
-NextOperation();
-```
-
-### 长函数调用
-
-不要仅因调用较长，就机械地把每个参数拆成独立短行。优先保持完整表达式和视觉平衡。
-
-对于外层宏或函数调用，按外层参数的语义分行：
-
-```cpp
-SUCCESS_OR_LOG(
     vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &attachment.memory_) == VK_SUCCESS,
     "Failed to allocate image memory"
 );
 ```
-
-上述调用的两个语义参数分别是：
-
-1. `vkAllocateMemory(...) == VK_SUCCESS`
-2. 错误信息
-
-因此保持为两行。只有内层调用长到明显难以识别时，才继续拆分其参数。拆分后如果产生大量短小、不对称的行，降低整体可读性，则保留原来的完整表达式。
 
 ### Vulkan 创建代码
 
@@ -163,6 +92,29 @@ SUCCESS_OR_LOG(
 6. 创建 View
 
 不要为了减少函数长度而破坏这一顺序，也不要进行不符合项目风格的过度抽象。
+
+### 注释规范
+
+核心原则：**代码说"是什么"，注释只说代码说不出来的东西**。写注释前先问：删掉这条注释，半年后的维护者会不会做出错误修改？会，才值得写。
+
+1. **Why, not What**：解释为什么这样做，不复述代码。`// 初始化 descriptor pool`（函数名已表达）是坏注释；`// 过滤 0 项（VUID-00302 要求 >0），场景模型在 PrepareFrame 之后才加载` 是好注释。
+2. **契约在声明处**：接口语义（如 `PeekModel` 与 `GetModel` 的区别）只写在头文件声明处；实现和调用点不复述。调用点只写该处特有的上下文（如"此处 PrepareFrame 时模型必为 Uploading"），不抄接口契约。
+3. **三类注释必须写**：
+   - **陷阱**：违反直觉的做法及原因（如"不要用 vkResetQueryPool，1.2 才进核心，本工程是 1.0"）；
+   - **规范出处**：VUID 条款、spec 章节、平台差异；
+   - **不变量与所有权**：状态机转换条件、谁负责销毁、跨帧生命周期、Handle/generation 语义。
+4. **死代码直接删**：不留注释掉的函数/变量（git 历史即存档）。想留设计痕迹，写一行"曾考虑 X，因 Y 放弃"比留整块尸体有价值。
+5. **一个文件一种语言**：引擎层设计注释统一中文；从 VulkanSample 继承的英文注释不必专门翻译，但新写的不再混英文复述体。
+6. **数量直觉**：越底层越少（buffer/image 创建序列自解释），决策越密集越多（同步、生命周期、状态机）。
+
+#### 头文件注释：作用与参数
+
+- **作用（语义摘要）要写**：头文件是"读接口不读实现"的消费者视角，非平凡公有函数值得一行契约级描述（语义边界、前置后置条件），如 `PeekModel` 的注释。
+- **参数只在名字和类型说不清楚时写**：逐参数 Doxygen（`@param x ...`）在本项目是噪音，`fileName` 不需要解释。但**非显而易见的约束必须写**：
+  - 单位（弧度还是度、字节还是元素数）；
+  - **所有权与生命周期**（谁销毁、指针有效期到何时、能否为 null）；
+  - 合法范围与默认值语义（如 `oldLayout` 默认 UNDEFINED，且 UNDEFINED/PREINITIALIZED 时 srcAccessMask=0）。
+- 判别法：注释写的是"调用者不读实现就会用错的东西"就写；读名字就知道的不写。
 
 ## 架构演进路线
 
@@ -198,11 +150,8 @@ SUCCESS_OR_LOG(
 1. 完成编译、Validation Layer 和对应运行测试。
 2. 保持修改未提交，先交由用户审查。
 3. 只有获得用户明确授权后才能提交。
-4. 提交完成并再次确认稳定后，只有获得用户明确授权才能创建对应的 annotated tag。
-5. Commit、Tag 和 Push 是三个独立动作，不能因用户批准其中一个而自动执行其他动作。
-6. Tag 必须指向已审查的稳定提交，不得给未提交工作区打 Tag。
-7. 已发布 Tag 不得强制移动；如阶段需要重新验收，创建带修订后缀的新 Tag，例如 `stage-2-r2`。
-8. 只有用户明确授权后才能分别推送 commit 和 tag。
+4. 提交并确认稳定后，获用户授权才创建 annotated tag；已发布 Tag 不得强制移动，重新验收用 `-r2` 后缀新 Tag。
+5. **Commit、Tag、Push 是三个独立动作**，不能因批准其中一个而自动执行其他。
 
 不要为了到达路线终点而提前实现条件阶段。完整 Frame Graph 只有在出现至少三个中间渲染阶段，并产生真实的跨 Pass 资源依赖与 Barrier 管理压力后才启动。
 
@@ -220,49 +169,30 @@ SUCCESS_OR_LOG(
 
 - `stage-0` → `ead68b1`，`stage-1` → `160b872`，`stage-2` → `4e5ae83`，均已推送。
 - `arch-stage-3a-resource-handles` / `arch-stage-3b-render-scene` / `arch-stage-4a-resource-lifetime` / `arch-stage-4b-upload-context` / `arch-stage-4c-staging-ring` 均已创建并推送。
-- 工作区有 4C 收尾补丁的未提交修改（staging ring 收尾 + Uploading→Ready 状态机），待用户 review 后提交。
+- 4C 收尾补丁（PendingUpload 简化、Uploading->Ready 状态机、PeekModel 解耦）已提交 `2de712b`。
 
-### Stage 4C 已完成（Staging Ring 异步上传，2026-08-24 收尾）
+### Stage 4C 摘要（Staging Ring 异步上传）
 
-1. **`PendingCopy` → `PendingUpload`**：队列项只留生命周期记账（submitValue/CB/slot/ownedBuffer/ownedMemory），录制信息提交前消费，无 kind/variant。
-2. **`SubmitImageCopy`**：实现 buffer→image 上传。签名 `(src, srcSize, dst, regions, finalLayout, oldLayout)`；region 偏移统一加 ring 切片起点；barrier 范围从 regions 推导（baseMip/baseLayer 的 min/max）；一对 barrier 夹 N 条 `vkCmdCopyBufferToImage`。
-3. **大上传回退 `SubmitOversizedBufferCopy`**：`size > ring 容量(64MB)` 时创建一次性 staging，挂 timeline 延迟销毁，`FreePendingCopy` 里销毁。
-4. **`Tick()`**：每帧（Renderer BeginFrame wait fence 后）回收已完成上传，空闲期也还账。
-5. **texture.cpp 5 处 + model.cpp 2 处迁移**：上传全走 ring（blit 链保持同步，同队列隐式提交序衔接）。
-6. **`ResourceState::Uploading` 状态机**：`LoadModel` 提交上传后 `Uploading`（不等待），`OnFrameCompleted` 检查 `IsReady()`（顶点/索引/材质/纹理回执全达成）转 `Ready`。`LoadModel` 末尾 `WaitAll` 已删；`Init` 末尾保留（系统资源 skybox/空纹理兜底）。
-7. **`PeekModel`**：只校验 index+generation 不查 state==Ready。用于"资源存在性"场景（descriptor 分配、RenderItem 生成、AddObject 算 AABB），与"渲染就绪"（GetModel，DrawQueue 门控）解耦。
-8. **`RenderScene::modelHandles`**：场景引用的全部模型显式注册，descriptor 分配/就绪轮询遍历用，不再从 RenderItem 队列收集（Uploading 模型不产生 RenderItem 但必须分配 descriptor）。
+- StagingRingAllocator 取代旧 UploadContext（upload_context.* 已删）：`SubmitImageCopy`（一对 barrier 夹 N 条 copy，region 偏移加 ring 切片起点）、`SubmitOversizedBufferCopy`（>64MB 专用 staging + timeline 延迟销毁）、`Tick()` 挂 Renderer::PrepareFrame 每帧回收。
+- 上传全走 ring：texture.cpp 5 处 + model.cpp 2 处（blit 链保持同步，同队列隐式提交序衔接）。
+- `LoadModel` 返回 Uploading 不等待；`OnFrameCompleted` 检查回执（顶点/索引/材质/纹理）转 Ready；`Init` 末尾保留 `WaitAll` 兜底系统资源（skybox/空纹理不走 Handle 状态机）。
+- `PeekModel`（只查 index+generation，资源存在即可）用于 descriptor 分配、RenderItem 生成、AddObject 算 AABB；`GetModel`（要求 Ready）只做渲染门控。`RenderScene::modelHandles` 显式注册全部模型供分配/轮询遍历。
 
 ### Stage 4C 踩坑记录（重要）
 
-- **`CreateDescriptorPool` 的 poolSizes 必须过滤 descriptorCount==0 的项**（VUID-VkDescriptorPoolSize-descriptorCount-00302）。场景模型在 `PrepareFrame` 之后才加载，若从空 RenderScene 计数，STORAGE_BUFFER 项为 0 → validation 报错。修复：`poolSizes.erase(std::remove_if(...))`。
-- **descriptor 分配与渲染就绪必须解耦**：descriptor set 应在 `PrepareFrame` 无条件分配（模型注定要渲染），用 `PeekModel`；渲染门控（`GetModel` state==Ready）只在 DrawQueue。二者耦合会导致"模型 Uploading → 无 RenderItem → descriptor 永不分配 → 就绪后也不渲染"。
-- **`Scene::AddObject` 也要用 `PeekModel`**：它用 AABB 算默认 transform（纯 CPU），`GetModel` 会因 Uploading 返回 nullptr → 模型被跳过 → 日志 "AddObject called with invalid model handle"。状态机改造后所有"只查资源存在"的调用点都要从 `GetModel` 改 `PeekModel`。
-- **Uploading→Ready 在 `OnFrameCompleted` 转**：`PrepareFrame` 时 `OnFrameCompleted` 从未运行过（渲染循环未开始），模型必然还是 Uploading——descriptor 分配必须不依赖它。
-- **`LoadModel` 摘 `WaitAll` 后**：`Init` 里 skybox/空纹理的异步上传原本蹭 LoadModel 的 WaitAll 兜底，摘掉后必须显式在 `Init` 末尾 `WaitAll`（系统资源不走 Handle 状态机，无门控）。
+- `CreateDescriptorPool` 必须过滤 descriptorCount==0 的 poolSize 项（VUID-00302）：场景模型在 PrepareFrame 之后才加载，空场景 STORAGE_BUFFER 计数为 0。
+- descriptor 分配（`PeekModel`，只查存在）与渲染门控（`GetModel`，要求 Ready）必须解耦；耦合会导致"模型 Uploading → 无 RenderItem → descriptor 永不分配 → 就绪后也不渲染"。`Scene::AddObject`（AABB 纯 CPU）等所有"只查存在"的调用点都要用 `PeekModel`。
+- `PrepareFrame` 时 `OnFrameCompleted` 从未运行过（渲染循环未开始），模型必为 Uploading——descriptor 分配不能依赖它。
 
 ### 下一步：Stage 5A（Descriptor Allocator）
 
-Persistent Pool / Frame Pool 分离、耗尽扩容与安全 reset。当前一次性 pool（按 PrepareFrame 时场景模型计数）无法处理运行时新增模型，是 5A 要解决的短板。开始前先检查工作区、最新 Tag 和上一阶段验收结果，给出具体方案供用户审查后再动手。
+Persistent/Frame Pool 分离、耗尽扩容与安全 reset。当前一次性 pool（按 PrepareFrame 时场景模型计数）无法处理运行时新增模型。开始前先出细化方案供用户审查。
 
 ## 构建系统
-- 构建工具：CMake + Ninja
-- 预设：`gcc-ninja`（GCC + Ninja Debug）
-- 编译器：MinGW g++
-- `engine/` 输出为 `libengine.a`（静态库）
-- `app/` 输出为 `Vulkan-pbr.exe`
-- `add_subdirectory(engine)` + `add_subdirectory(app)`
-- `file(GLOB ...)` 收集各模块源文件
-- `target_include_directories(engine PUBLIC ..)` 设置项目根搜索路径
-
-## CMake 配置参考
-```cmake
-# engine/CMakeLists.txt
-file(GLOB ENGINE_SRC "core/*.cpp" "resource/*.cpp" "scene/*.cpp" "render/*.cpp" "platform/*.cpp" "utils/*.cpp" "../external/imgui/*.cpp")
-add_library(engine STATIC ${ENGINE_SRC} ${ENGINE_HEADERS} ${BASISU_SOURCES})
-target_include_directories(engine PUBLIC ..)
-target_link_libraries(engine PUBLIC ${Vulkan_LIBRARY})
-```
+- CMake + Ninja，预设 `gcc-ninja`（MinGW g++，Debug）；`engine/` 输出 `libengine.a`，`app/` 输出 `Vulkan-pbr.exe`；`add_subdirectory(engine)` + `add_subdirectory(app)`；`target_include_directories(engine PUBLIC ..)` 设置项目根搜索路径。
+- **engine 源文件显式列出（不是 GLOB）**：GLOB 只在 configure 时扫描，新增/删除 .cpp 不会触发重新配置。新增文件必须同步加进 `engine/CMakeLists.txt` 对应 `ENGINE_*_SRC/_HEADERS`（`scene/scene.cpp` 曾因漏列报 undefined reference）。
+- Basis Universal 源：`external/basisu/transcoder/basisu_transcoder.cpp` + `zstd/zstd.c`。
+- Shader 随构建自动编译（`scripts/compile_shaders.py`）。
 
 ## 数据类型归属
 | 类型/对象 | 属于 | 原因 |
@@ -322,7 +252,7 @@ PBRRenderPass（管"画什么"）
   ├── DescriptorSets：scene×frameCount + material×materialCount + SSBO×1 + meshSSBO×frameCount
   ├── pipelineLayout + pipelines_（pbr / pbr_double_sided / pbr_alpha_blending）
   ├── Execute(cb, frameIndex)：绑顶点缓冲 → 遍历节点 → 绑管线/descriptor → push constant → draw
-  └── 数据源：initInfo_.scene->model_（勿在类定义时静态取 ResourceManager 指针，此时单例未 Init）
+  └── 数据源：initInfo_.renderScene_（勿在类定义时静态取 ResourceManager 指针，此时单例未 Init）
 
 SkyBoxRenderPass（管"画什么"）
   ├── 1 个 layout（3 binding：matrices UBO + params UBO + prefilteredCube sampler）
@@ -334,12 +264,14 @@ SkyBoxRenderPass（管"画什么"）
 **RenderPassInitInfo 是 Pass 的显式依赖声明**（不要传 Renderer* 给 Pass，会破坏封装）：
 ```cpp
 struct RenderPassInitInfo {
-    SwapChain* swapChain_;         // 格式/extent/imageCount
-    Scene* scene;                  // model/cubeMap/UBO
-    VkPipelineCache pipelineCache_;
-    VkRenderPass mainRenderPass_;  // 公共画框句柄
-    VkDescriptorPool descriptorPool_;
-    bool multiSamplingEnabled_;
+    bool                        multiSamplingEnabled_;
+    engine::core::SwapChain*    swapChain_;        // 格式/extent/imageCount
+    const RenderScene*          renderScene_;      // RenderItem/环境贴图（不再直接依赖 scene.h）
+    VkPipelineCache*            pipelineCache_;
+    VkRenderPass*               mainRenderPass_;   // 公共画框句柄
+    VkDescriptorPool*           descriptorPool_;
+    std::vector<core::Buffer>*  matricesUBOBuffers_;  // 共享 UBO（Renderer 持有，Pass 引用）
+    std::vector<core::Buffer>*  paramsUBOBuffers_;
 };
 ```
 
@@ -389,11 +321,4 @@ vkDeviceWaitIdle
 - staging buffer：`Buffer` 有 `~Buffer()` 自动销毁，但必须保证 `stagingBuffer.device` 已赋值（`Device::CreateBuffer` 不填该字段）
 - `Device::InitDevice()` 不要重复 `vkCreateCommandPool`（曾存在两次调用导致泄漏）
 
-## 日志系统
-全局单例 `engine::utils::Logger`，宏封装：
-```cpp
-LOG_INFO(msg)    // 流式写法，如 LOG_INFO("Failed: " << res)
-LOG_WARN(msg)
-LOG_ERROR(msg)
-LOG_FATAL(msg)   // 自动 abort
-```
+

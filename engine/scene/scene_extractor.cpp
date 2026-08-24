@@ -45,7 +45,6 @@ namespace engine::scene
         {
             resource::ModelHandle h = scene.sceneObjects_[i].modelHandle;
             // PeekModel：资源存在即可参与提取（上传在途也算），只保证 descriptor/几何可用；
-            // "是否可渲染"由 DrawQueue 的 GetModel(state==Ready) 决定
             resource::Model* model = rm.PeekModel(h);
             if (model == nullptr) continue;
 

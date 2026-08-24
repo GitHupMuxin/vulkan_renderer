@@ -16,7 +16,6 @@ namespace engine::resource
 
     ResourceManager::~ResourceManager()
     {
-        // 析构时强制清空所有资源（无需等待 GPU，因为 Device 会先于单例析构做 vkDeviceWaitIdle）
         for (auto& slot : this->modelSlots_)
         {
             slot.resource.reset();
@@ -31,7 +30,6 @@ namespace engine::resource
     void ResourceManager::Init()
     {
         LOG_INFO("ResourceManager: start to init resource manager...");
-        // 延迟删除需要知道帧缓冲数（retireFrame = 当前帧 + frameCount 保证 in-flight 帧都完成）
         this->frameCount_ = core::Device::Instance().GetSetting().frameCount_;
         std::string skyboxFile = ResourceManager::assetPath_ + "models/Box/glTF-Embedded/Box.gltf";
         std::string emptyTexture2DFile = this->assetPath_ + "textures/empty.ktx";
@@ -45,12 +43,7 @@ namespace engine::resource
         this->emptyTexture2D_ = std::make_unique<Texture2D>();
         this->emptyTexture2D_->LoadFromFile(emptyTexture2DFile, VK_FORMAT_R8G8B8A8_UNORM);
 
-        // 系统资源（skybox/空纹理）是应用整个生命周期使用的，且不走 Handle 状态机，
-        // 等待其上传完成，保证首帧即可用。场景模型（LoadModel）走 Uploading→Ready 状态机，不在此等待。
         core::StagingRingAllocator::Instance().WaitAll();
-
-        // 用户资产（场景模型、环境贴图）由 Scene 按 SceneDescription 加载，
-        // 见 Scene::Init(const SceneDescription&)，这里不再预加载。
     }
 
     Model* ResourceManager::GetModel(ModelHandle handle)
@@ -82,7 +75,6 @@ namespace engine::resource
         {
             return nullptr;
         }
-        // 不检查 state：Uploading（上传在途）也算资源存在，GPU 对象（buffer/image）已创建
         return slot.resource.get();
     }
 
@@ -139,7 +131,6 @@ namespace engine::resource
         {
             return;
         }
-        // ① Handle 立即失效：state→PendingDelete + generation++，旧 handle 无法再取到资源
         slot.state = ResourceState::PendingDelete;
         slot.generation++;
         // ② 不立即 reset()：GPU 可能还在用该模型的 VBO/IBO。
@@ -209,11 +200,6 @@ namespace engine::resource
         }
     }
 
-    // Model* ResourceManager::GetPrototype(SimpleModelType type)
-    // {
-    //     return this->prototypes_[type].get();
-    // }
-
     Texture2D* ResourceManager::GetEmptyTexture2D()
     {
         return this->emptyTexture2D_.get();
@@ -223,11 +209,6 @@ namespace engine::resource
     {
         return this->skybox_.get();
     }
-
-    // std::unique_ptr<Model> ResourceManager::CreateFromPrototype(SimpleModelType type)
-    // {
-    //     return this->prototypes_[type]->Clone();
-    // }
 
     ModelHandle ResourceManager::LoadModel(const std::string& fileName)
     {

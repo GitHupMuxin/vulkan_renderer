@@ -31,7 +31,6 @@ namespace engine::render
         this->renderPassInitInfo_.swapChain_ = &this->swapChain_;
         this->renderPassInitInfo_.multiSamplingEnabled_ = this->rendererDescription_.multiSampling_;
 		this->renderPassInitInfo_.pipelineCache_ = &this->pipelineCache_;
-		this->renderPassInitInfo_.descriptorPool_ = &this->descriptorPool_;
 		this->renderPassInitInfo_.mainRenderPass_ = &this->mainRenderPass_;
 		this->renderPassInitInfo_.matricesUBOBuffers_ = &this->matricesUBOBuffers_;
 		this->renderPassInitInfo_.paramsUBOBuffers_ = &this->paramsUBOBuffers_;
@@ -43,8 +42,6 @@ namespace engine::render
         {
             renderPass->Init(this->renderPassInitInfo_);
         }
-
-		this->CreateDescriptorPool();
 
 		for (auto& renderPass : this->renderPasses_)
 		{
@@ -239,51 +236,7 @@ namespace engine::render
 			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<uint64_t>(this->renderFinishedSemaphores_[i]), ("RenderFinishedSemaphore[" + std::to_string(i) + "]").c_str());
 		}
     }
-
-    void Renderer::CreateDescriptorPool()
-	{
-		LOG_INFO("Renderer: start to create descriptor pool...");
-		auto& device = core::Device::Instance();
-		DescriptorSetCount setCount;
-		
-		for (auto& renderPass : this->renderPasses_)
-		{
-			setCount = setCount + renderPass->GetDescriptorSetCount();
-		}
-
-		std::vector<VkDescriptorPoolSize> poolSizes = {
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount.uniformBufferCount },
-			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, setCount.imageSamplerCount },
-			// One SSBO for the shader material buffer and one SSBO for the mesh data buffer
-			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount.storageBufferCount }
-		};
-
-		// 过滤 descriptorCount 为 0 的项（VUID-VkDescriptorPoolSize-descriptorCount-00302 要求 > 0）。
-		// 场景模型在 PrepareFrame 之后才加载，此时 storageBufferCount 可能为 0，空项不应提交。
-		poolSizes.erase(
-			std::remove_if(poolSizes.begin(), poolSizes.end(),
-				[](const VkDescriptorPoolSize& size) { return size.descriptorCount == 0; }),
-			poolSizes.end());
-
-		VkDescriptorPoolCreateInfo descriptorPoolCI{};
-		descriptorPoolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		descriptorPoolCI.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-		descriptorPoolCI.pPoolSizes = poolSizes.data();
-		descriptorPoolCI.maxSets = setCount.maxSets;
-
-		SUCCESS_OR_LOG(
-            vkCreateDescriptorPool(device.GetLogicalDeviceHandle(), &descriptorPoolCI, nullptr, &this->descriptorPool_) == VK_SUCCESS,
-            "Renderer: Failed to set up descriptors."
-        );
-	}
-
-
-    // void Renderer::AddRenderPass(std::unique_ptr<RenderPass> renderPass)
-    // {
-    //     this->renderPasses_.push_back(std::move(renderPass));
-    // }
     
-
 	void Renderer::CreateMainRenderPass()
 	{
 		LOG_INFO("Renderer: start to create main render pass...");
@@ -1061,12 +1014,6 @@ namespace engine::render
         auto& device = core::Device::Instance();
 
         vkDeviceWaitIdle(device.GetLogicalDeviceHandle());
-
-        if (this->descriptorPool_ != VK_NULL_HANDLE) 
-		{
-            vkDestroyDescriptorPool(device.GetLogicalDeviceHandle(), this->descriptorPool_, nullptr);
-            this->descriptorPool_ = VK_NULL_HANDLE;
-        }
 
         if (this->pipelineCache_ != VK_NULL_HANDLE) 
 		{

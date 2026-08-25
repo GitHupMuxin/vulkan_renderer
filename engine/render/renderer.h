@@ -54,8 +54,6 @@ namespace engine::render
 
             RendererDescription                         rendererDescription_;
             RenderPassInitInfo                          renderPassInitInfo_;
-
-            VkDescriptorPool                            descriptorPool_ = VK_NULL_HANDLE;
             
             VkRenderPass                                mainRenderPass_ = VK_NULL_HANDLE;
             std::vector<VkFramebuffer>                  frameBuffers_;
@@ -88,7 +86,7 @@ namespace engine::render
             void                                        CreateSyncObjects();
             void                                        CreateFrameContexts();
 
-            void                                        CreateDescriptorPool();
+            // void                                        CreateDescriptorPool();
             void                                        CreateMainAttachments(MainRenderPassAttachmentList& attachmentList);
             bool                                        RecreateSwapChain(uint32_t width, uint32_t height);
 

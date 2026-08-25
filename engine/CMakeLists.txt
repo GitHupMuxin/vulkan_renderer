@@ -16,6 +16,8 @@ set(ENGINE_CORE_SRC
     "core/physical_device.cpp"
     "core/swapchain.cpp"
     "core/staging_ring_allocator.cpp"
+    "core/descriptor_allocator.cpp"
+    "core/descriptor_layout_registry.cpp"
 )
 set(ENGINE_CORE_HEADERS
     "core/buffer.h"
@@ -26,6 +28,8 @@ set(ENGINE_CORE_HEADERS
     "core/physical_device.h"
     "core/swapchain.h"
     "core/staging_ring_allocator.h"
+    "core/descriptor_allocator.h"
+    "core/descriptor_layout_registry.h"
 )
 
 # --- Resource ---

@@ -16,6 +16,9 @@
 #include "engine/utils/log.h"
 #include "engine/resource/model.h"
 #include "engine/core/staging_ring_allocator.h"
+#include "engine/core/descriptor_allocator.h"
+#include "engine/core/descriptor_layout_registry.h"
+#include "engine/core/schema.h"
 
 namespace engine::resource
 {
@@ -287,7 +290,8 @@ namespace engine::resource
 	void GLTFModel::Destroy()
 	{
 		auto& device = core::Device::Instance();
-		if (this->vertices_.buffer != VK_NULL_HANDLE) 
+		auto& allocator = core::DescriptorAllocator::Instance();
+		if (this->vertices_.buffer != VK_NULL_HANDLE)
 		{
 			vkDestroyBuffer(device.GetLogicalDeviceHandle(), this->vertices_.buffer, nullptr);
 			vkFreeMemory(device.GetLogicalDeviceHandle(), this->vertices_.memory, nullptr);
@@ -315,7 +319,6 @@ namespace engine::resource
 		{
 			delete node;
 		}
-		this->materials_.resize(0);
 		this->animations_.resize(0);
 		this->nodes_.resize(0);
 		this->linearNodes_.resize(0);
@@ -325,13 +328,39 @@ namespace engine::resource
 			delete skin;
 		}
 		this->skins_.resize(0);
+
+		for (auto& material : materials_)
+		{
+			if (material.descriptorSet != VK_NULL_HANDLE)
+			{
+				allocator.FreePersistent(material.descriptorSet);
+				material.descriptorSet = VK_NULL_HANDLE;
+			}
+		}
+		this->materials_.resize(0);
+
+		if (descriptorSetMaterial_ != VK_NULL_HANDLE)
+		{
+			allocator.FreePersistent(descriptorSetMaterial_);
+			descriptorSetMaterial_ = VK_NULL_HANDLE;
+		}
 		this->shaderMaterialBuffer_.Destroy();
-		for (auto& shaderMeshDataBuffer : this->shaderMeshDataBuffers_) 
+
+		for (auto& set : this->descriptorSetsMeshData_)
+		{
+			if (set != VK_NULL_HANDLE)
+			{
+				allocator.FreePersistent(set);
+				set = VK_NULL_HANDLE;
+			}
+		}
+		for (auto& shaderMeshDataBuffer : this->shaderMeshDataBuffers_)
 		{
 			shaderMeshDataBuffer.Destroy();
 		}
+		this->descriptorSetsMeshData_.clear();
 	};
-	
+
 	void GLTFModel::LoadNode(Node *parent, const tinygltf::Node &node, uint32_t nodeIndex, const tinygltf::Model &model, LoaderInfo& loaderInfo, float globalscale)
 	{
 		Node *newNode = new Node{};
@@ -1306,7 +1335,8 @@ namespace engine::resource
 		auto& device = core::Device::Instance();
 
 		std::vector<ShaderMaterial> shaderMaterials{};
-		for (auto& material : this->materials_) {
+		for (auto& material : this->materials_)
+		{
 			ShaderMaterial shaderMaterial{};
 
 			shaderMaterial.emissiveFactor = material.emissiveFactor;
@@ -1381,37 +1411,57 @@ namespace engine::resource
 			}
 		}
 
-		for (auto& shaderMeshDataBuffer : this->shaderMeshDataBuffers_) {
-			if (shaderMeshDataBuffer.buffer != VK_NULL_HANDLE) {
-				shaderMeshDataBuffer.Destroy();
+		for (int i = 0; i < this->shaderMeshDataBuffers_.size(); i++)
+		{
+			if (this->shaderMeshDataBuffers_[i].buffer != VK_NULL_HANDLE) {
+				this->shaderMeshDataBuffers_[i].Destroy();
 			}
 			VkDeviceSize bufferSize = shaderMeshData.size() * sizeof(ShaderMeshData);
 			if (!device.GetRequireStaging()) {
 				// Prefer a host visible device buffer (ReBAR/SAM on discreate GPUs, always available on integrated GPUs)
 				SUCCESS_OR_LOG(
-					device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, bufferSize, &shaderMeshDataBuffer.buffer, &shaderMeshDataBuffer.memory), 
+					device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, bufferSize, &this->shaderMeshDataBuffers_[i].buffer, &this->shaderMeshDataBuffers_[i].memory),
 					"GLTFModel: Failed to create buffer."
 				);
-				shaderMeshDataBuffer.device = device.GetLogicalDeviceHandle();
-				shaderMeshDataBuffer.Map();
-				memcpy(shaderMeshDataBuffer.mapped, shaderMeshData.data(), bufferSize);
+				this->shaderMeshDataBuffers_[i].device = device.GetLogicalDeviceHandle();
+				this->shaderMeshDataBuffers_[i].Map();
+				memcpy(this->shaderMeshDataBuffers_[i].mapped, shaderMeshData.data(), bufferSize);
 			} else {
 				SUCCESS_OR_LOG(
-					device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, bufferSize, &shaderMeshDataBuffer.buffer, &shaderMeshDataBuffer.memory) == VK_SUCCESS,
+					device.CreateBuffer(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, bufferSize, &this->shaderMeshDataBuffers_[i].buffer, &this->shaderMeshDataBuffers_[i].memory) == VK_SUCCESS,
 					"GLTFModel: Failed to create buffer."
 				);
 
 				// 异步搬运（ring staging -> 目标，提交不等待；同队列隐式序保证按序执行）
 				core::StagingRingAllocator::Instance().SubmitBufferCopy(
-					shaderMeshData.data(), bufferSize, shaderMeshDataBuffer.buffer
+					shaderMeshData.data(), bufferSize, this->shaderMeshDataBuffers_[i].buffer
 				);
 			}
 			// Update descriptor
-			shaderMeshDataBuffer.descriptor.buffer = shaderMeshDataBuffer.buffer;
-			shaderMeshDataBuffer.descriptor.offset = 0;
-			shaderMeshDataBuffer.descriptor.range = bufferSize;
-			shaderMeshDataBuffer.device = device.GetLogicalDeviceHandle();
+			this->shaderMeshDataBuffers_[i].descriptor.buffer = this->shaderMeshDataBuffers_[i].buffer;
+			this->shaderMeshDataBuffers_[i].descriptor.offset = 0;
+			this->shaderMeshDataBuffers_[i].descriptor.range = bufferSize;
+			this->shaderMeshDataBuffers_[i].device = device.GetLogicalDeviceHandle();
 		}
+	}
+
+	void GLTFModel::CreateDescriptorSet()
+	{
+		VkDescriptorSetLayout materialSetLayout = core::DescriptorLayoutRegistry::Instance().GetOrCreate(schema::kMaterialSet);
+
+		for (auto &material : this->materials_)
+		{
+			material.descriptorSet = core::DescriptorAllocator::Instance().AllocatePersistent(materialSetLayout);
+		}
+
+		VkDescriptorSetLayout materialBufferLayout = core::DescriptorLayoutRegistry::Instance().GetOrCreate(schema::kMaterialSSBO);
+
+		this->descriptorSetMaterial_ = core::DescriptorAllocator::Instance().AllocatePersistent(materialBufferLayout);
+
+		VkDescriptorSetLayout meshDataLayout = core::DescriptorLayoutRegistry::Instance().GetOrCreate(schema::kMeshDataSSBO);
+
+		for (int i = 0; i < this->descriptorSetsMeshData_.size(); i++)
+			this->descriptorSetsMeshData_[i] = core::DescriptorAllocator::Instance().AllocatePersistent(meshDataLayout);
 	}
 
 	void GLTFModel::UpdateMeshDataBuffer(uint32_t index)
@@ -1461,6 +1511,7 @@ namespace engine::resource
 	{
 		return std::move(std::make_unique<GLTFModel>());
 	}
+
 
 	bool GLTFModel::IsReady() const
 	{

@@ -71,7 +71,7 @@ namespace app
             void                                        UpdateCamera(float deltaTime);  
             void                                        HandleMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-};
+    };
 
 
 }

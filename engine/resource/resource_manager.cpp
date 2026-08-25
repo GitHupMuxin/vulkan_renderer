@@ -16,15 +16,7 @@ namespace engine::resource
 
     ResourceManager::~ResourceManager()
     {
-        for (auto& slot : this->modelSlots_)
-        {
-            slot.resource.reset();
-        }
-        for (auto& slot : this->envSlots_)
-        {
-            slot.resource.reset();
-        }
-        this->pendingDeletions_.clear();
+
     }
 
     void ResourceManager::Init()
@@ -44,6 +36,21 @@ namespace engine::resource
         this->emptyTexture2D_->LoadFromFile(emptyTexture2DFile, VK_FORMAT_R8G8B8A8_UNORM);
 
         core::StagingRingAllocator::Instance().WaitAll();
+    }
+
+    void ResourceManager::Cleanup()
+    {
+        for (auto& slot : this->modelSlots_)
+        {
+            slot.resource.reset();
+        }
+        for (auto& slot : this->envSlots_)
+        {
+            slot.resource.reset();
+        }
+        this->pendingDeletions_.clear();
+        this->skybox_.reset();
+        this->emptyTexture2D_.reset();
     }
 
     Model* ResourceManager::GetModel(ModelHandle handle)
@@ -223,6 +230,7 @@ namespace engine::resource
         model->LoadFromFile(fileName);
 		model->CreateMaterialBuffer();
 		model->CreateMeshDataBuffer();
+        model->CreateDescriptorSet();
 		auto tFileLoad = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - tStart).count();
 		std::cout << "Loading took " << tFileLoad << " ms" << std::endl;
 

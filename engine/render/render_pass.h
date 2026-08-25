@@ -30,7 +30,6 @@ namespace engine::render
             const RenderScene*          renderScene_;
             VkPipelineCache*            pipelineCache_;
             VkRenderPass*               mainRenderPass_;
-            VkDescriptorPool*           descriptorPool_;
             // 共享 UBO buffers（Renderer 持有，Pass 填 descriptor 时引用）
             std::vector<core::Buffer>*  matricesUBOBuffers_;
             std::vector<core::Buffer>*  paramsUBOBuffers_;
@@ -45,7 +44,6 @@ namespace engine::render
             RenderPass();
             virtual ~RenderPass();
             virtual void                UpdateUniformData(uint32_t frameIndex) = 0;
-            virtual DescriptorSetCount  GetDescriptorSetCount() = 0;
             virtual void                Init(const RenderPassInitInfo& initInfo) = 0;
             virtual void                ExecutePreProcess() = 0;
             virtual void                Execute(VkCommandBuffer currentCB, uint32_t frameIndex) = 0;
@@ -55,15 +53,7 @@ namespace engine::render
     class SkyBoxRenderPass : public RenderPass
     {
         private:
-            struct UBOMatricesUpload
-            {
-                glm::mat4 projection{ 1.0f };
-                glm::mat4 model{ 1.0f };
-            };
-
-            VkDescriptorSetLayout                       skyboxLayout_{ VK_NULL_HANDLE };
             std::vector<VkDescriptorSet>                skyboxSets_;
-            std::vector<core::Buffer>                   matricesUBOBuffer_;
 
             VkPipelineLayout                            pipelineLayout_{ VK_NULL_HANDLE };
             std::unordered_map<std::string, VkPipeline> pipelines_;
@@ -77,7 +67,6 @@ namespace engine::render
             SkyBoxRenderPass();
             ~SkyBoxRenderPass();
             void                                        UpdateUniformData(uint32_t frameIndex) override;
-            DescriptorSetCount                          GetDescriptorSetCount();
             void                                        Init(const RenderPassInitInfo& initInfo) override;
             void                                        ExecutePreProcess() override;
             void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex) override;
@@ -93,20 +82,6 @@ namespace engine::render
     		    int32_t materialIndex;
     	    };
 
-            struct DescriptorSetLayouts
-            {
-                VkDescriptorSetLayout scene{ VK_NULL_HANDLE };
-                VkDescriptorSetLayout material{ VK_NULL_HANDLE };
-                VkDescriptorSetLayout materialBuffer{ VK_NULL_HANDLE };
-                VkDescriptorSetLayout meshDataBuffer{ VK_NULL_HANDLE };
-            }; 
-
-            struct DescriptorSets
-            {
-                VkDescriptorSet scene = VK_NULL_HANDLE;
-            };
-
-            // PBR 预处理产出的离线贴图（BRDF LUT / 能量补偿 Eu / Eavg）
             struct PreProcessTextureList
             {
                 resource::Texture2D lut_;
@@ -114,8 +89,7 @@ namespace engine::render
                 resource::Texture2D eavg_;
             };
 
-            std::vector<DescriptorSets>                 descriptorSets_;
-            DescriptorSetLayouts                        descriptorSetLayouts_;
+            std::vector<VkDescriptorSet>                sceneSets_;
 
             VkPipelineLayout                            pipelineLayout_{ VK_NULL_HANDLE };
             std::unordered_map<std::string, VkPipeline> pipelines_;
@@ -135,7 +109,6 @@ namespace engine::render
             PBRRenderPass();
             ~PBRRenderPass();
             void                                        UpdateUniformData(uint32_t frameIndex) override;
-            DescriptorSetCount                          GetDescriptorSetCount();
             void                                        Init(const RenderPassInitInfo& initInfo) override;
             void                                        ExecutePreProcess() override;
             void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex) override;

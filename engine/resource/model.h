@@ -223,6 +223,8 @@ namespace engine::resource
 			// Descriptor set that exposes this model's material SSBO (set=3)
 			virtual VkDescriptorSet& 					GetDescriptorSetMaterial() = 0;
 
+			virtual void 								CreateDescriptorSet() = 0;
+
 			// Render-layer interface (VBO/IBO + scene graph + animation)
 			virtual VkBuffer 							GetVertexBuffer() = 0;
 			virtual VkBuffer 							GetIndexBuffer() = 0;
@@ -346,9 +348,13 @@ namespace engine::resource
 			Node* 								NodeFromIndex(uint32_t index);
 			void 								CreateMaterialBuffer() override;
 			void 								CreateMeshDataBuffer() override;
+
+			void 								CreateDescriptorSet() override;
+
 			void 								UpdateMeshDataBuffer(uint32_t index) override;
 			bool 								IsReady() const override;
 			std::unique_ptr<Model> 				Clone() override;
+
 			glm::mat4 							GetAABBBox() override;
 			uint32_t 							GetMaterialCount() override;
 			uint32_t 							GetMeshCount() override;

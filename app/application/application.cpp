@@ -1,6 +1,8 @@
 #include "app/application/application.h"
 #include "engine/scene/scene_extractor.h"
 #include "engine/core/staging_ring_allocator.h"
+#include "engine/core/descriptor_allocator.h"
+#include "engine/core/descriptor_layout_registry.h"
 
 
 namespace app
@@ -12,8 +14,15 @@ namespace app
 
     Application::~Application()
     {
-        // UploadContext 依赖 Device，必须在 Device 存活时清理
+        this->ui_.reset();
+
+        this->renderer_.reset();
+
+        engine::resource::ResourceManager::Instance().Cleanup();
+
         engine::core::StagingRingAllocator::Instance().Cleanup();
+        engine::core::DescriptorAllocator::Instance().Cleanup();
+        engine::core::DescriptorLayoutRegistry::Instance().Cleanup();
     }
 
     void Application::SetArgs(int args, char* argv[])
@@ -32,6 +41,8 @@ namespace app
 
         // UploadContext 在 Device 就绪后初始化（供资源加载异步上传）
         engine::core::StagingRingAllocator::Instance().Init();
+        engine::core::DescriptorAllocator::Instance().Init();
+        engine::core::DescriptorLayoutRegistry::Instance().Init();
     }
 
     

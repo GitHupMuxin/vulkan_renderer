@@ -78,21 +78,16 @@ namespace engine::resource
             static ResourceManager&                         Instance();
 
             void                                            Init();          
+            void                                            Cleanup();
 
-            // ---- 用户资产访问（Handle 校验） ----
-            // 三层校验：index 越界 → state == Ready → generation 匹配，任一失败返回 nullptr
             Model*                                          GetModel(ModelHandle handle);
             EnvironmentCubeMap*                             GetEnvironmentCubeMap(EnvironmentCubeMapHandle handle);
-            // 仅校验 index + generation（资源存在、GPU 对象可访问），不要求 state==Ready。
             // 语义：资源已注册且未失效。用于"分配 descriptor set / 生成 RenderItem"等
-            // 只看资源存在性的场景；"是否可渲染"由 GetModel（state==Ready）决定。
             Model*                                          PeekModel(ModelHandle handle);
             bool                                            IsModelAlive(ModelHandle handle) const;
             bool                                            IsEnvironmentAlive(EnvironmentCubeMapHandle handle) const;
             uint32_t                                        GetModelSize() const;
             uint32_t                                        GetEnvironmentCubeMapSize() const;
-            // 释放资源：Handle 立即失效（state→PendingDelete + generation++），
-            // 真正的 GPU 资源销毁延迟到 GPU 使用结束后（见 OnFrameCompleted）
             void                                            ReleaseModel(ModelHandle handle);
             void                                            ReleaseEnvironmentCubeMap(EnvironmentCubeMapHandle handle);
 

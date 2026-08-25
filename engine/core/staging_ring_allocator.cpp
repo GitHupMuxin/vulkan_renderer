@@ -123,7 +123,7 @@ namespace engine::core
             if (!this->waitingList_.empty())
             {
                 LOG_WARN("StagingRingAllocator: wrap with in-flight uploads");
-                this->WaitUntil(this->waitingList_.front().submitValue);
+                this->WaitAll();
                 this->Recycle();
             }
             this->stagingRingBuffer_.Reset();

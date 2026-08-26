@@ -62,6 +62,7 @@ set(ENGINE_SCENE_HEADERS
 # --- Render ---
 set(ENGINE_RENDER_SRC
     "render/renderer.cpp"
+    "render/pipeline_cache_file.cpp"
     "render/render_pass.cpp"
     "render/fullscreen_pass.cpp"
     "render/render_scene.cpp"
@@ -69,6 +70,7 @@ set(ENGINE_RENDER_SRC
 )
 set(ENGINE_RENDER_HEADERS
     "render/renderer.h"
+    "render/pipeline_cache_file.h"
     "render/render_pass.h"
     "render/fullscreen_pass.h"
     "render/render_scene.h"

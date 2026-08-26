@@ -217,6 +217,7 @@ data/models/cerberus/*.*
 !data/textures/hdr/README.md
 
 *.args.json
+*.pipeline_cache
 
 # Ignore VS project files
 *.sln

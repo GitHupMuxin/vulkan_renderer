@@ -108,6 +108,9 @@ endif()
 # 日志输出目录：统一写到项目根目录（不依赖运行时工作目录）
 add_compile_definitions(VK_LOG_DIR="${CMAKE_SOURCE_DIR}/")
 
+# Pipeline cache 是与具体 GPU/驱动绑定的运行时产物，放在构建目录避免污染源码树
+add_compile_definitions(VK_PIPELINE_CACHE_DIR="${CMAKE_BINARY_DIR}/cache/")
+
 # Compiler specific stuff
 IF(MSVC)
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")

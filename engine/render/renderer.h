@@ -83,6 +83,7 @@ namespace engine::render
             void                                        InitSwapChain(engine::platform::Window& window);
             void                                        InitCommandPool();
             void                                        CreatePipelineCache();
+            void                                        SavePipelineCache();
             void                                        CreateSyncObjects();
             void                                        CreateFrameContexts();
 

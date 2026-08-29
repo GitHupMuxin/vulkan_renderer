@@ -1,36 +1,36 @@
+#include <cstdlib>
 #include <string>
 #include <memory>
 #include "app/application/application.h"
 #include "engine/utils/log.h"
 
-std::unique_ptr<app::Application> application = std::make_unique<app::Application>();
+namespace
+{
+	app::Application* gApplication = nullptr;
+}
 
 // OS specific macros for the example main entry points
 LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-	application->HandleMessage(hWnd, uMsg, wParam, lParam);
+	if (gApplication != nullptr)
+	{
+		gApplication->HandleMessage(hWnd, uMsg, wParam, lParam);
+	}
 	return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-	auto& logger = engine::utils::Logger::Instance();
-#if !defined(NDEBUG)
-	logger.EnableConsoleOutput(true);
-	logger.SetConsoleLogLevel(engine::utils::LogLevel::Info);
-	logger.SetFileLogLevel(engine::utils::LogLevel::Debug);
-#else
-	logger.SetFileLogLevel(engine::utils::LogLevel::Info);
-#endif
 	const std::string logPath = std::string(VK_LOG_DIR) + "engine.log";
-	if (!logger.SetLogFile(logPath))
+	if (!engine::utils::Logger::Instance().Initialize(
+		engine::utils::MakeDefaultLoggerConfig(logPath)))
 	{
-		LOG_ERROR("Application: failed to open log file: " << logPath);
+		return EXIT_FAILURE;
 	}
-	else
-	{
-		LOG_INFO("Application: logging initialized: " << logPath);
-	}
+	LOG_INFO("Application: logging initialized: " << logPath);
+
+	auto application = std::make_unique<app::Application>();
+	gApplication = application.get();
 
 	application->SetArgs(__argc, __argv);
 	application->InitVulkan();
@@ -51,7 +51,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 	application->SetUpUI();
 
 	application->RenderLoop();
+	gApplication = nullptr;
 	application.reset();
 
-	return 0;
+	return EXIT_SUCCESS;
 }

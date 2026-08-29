@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <iomanip>
+#include <utility>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -21,7 +22,7 @@ namespace
 
     constexpr std::array<const char*, 5> kLevelColors = {
         "\x1b[90m",   // Debug: 灰
-        "\x1b[32m",   // Info: 绿
+        "\x1b[94m",   // Info: 高亮蓝
         "\x1b[33m",   // Warning: 黄
         "\x1b[31m",   // Error: 红
         "\x1b[1;31m"  // Fatal: 加粗红
@@ -82,6 +83,21 @@ namespace
 
 namespace engine::utils
 {
+    LoggerConfig MakeDefaultLoggerConfig(std::string filePath)
+    {
+        LoggerConfig config{};
+        config.filePath_ = std::move(filePath);
+#if defined(NDEBUG)
+        config.fileLevel_ = LogLevel::Info;
+#else
+        config.fileLevel_ = LogLevel::Debug;
+        config.consoleLevel_ = LogLevel::Info;
+        config.enableConsole_ = true;
+        config.createConsoleIfMissing_ = true;
+#endif
+        return config;
+    }
+
     Logger& Logger::Instance()
     {
         static Logger instance;
@@ -91,45 +107,32 @@ namespace engine::utils
     Logger::Logger() = default;
     Logger::~Logger() = default;
 
-    bool Logger::SetLogFile(const std::string& filePath, bool append)
+    bool Logger::Initialize(const LoggerConfig& config)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto openMode = std::ios::out | (append ? std::ios::app : std::ios::trunc);
-        auto fileStream = std::make_unique<std::ofstream>(filePath, openMode);
+
+        fileLevel_ = config.fileLevel_;
+        consoleLevel_ = config.consoleLevel_;
+        consoleEnabled_ = false;
+        consoleColorEnabled_ = false;
+
+        if (config.enableConsole_)
+        {
+            consoleColorEnabled_ = std::getenv("NO_COLOR") == nullptr;
+            consoleEnabled_ = PrepareConsole(config.createConsoleIfMissing_, consoleColorEnabled_);
+        }
+
+        const auto openMode = std::ios::out
+            | (config.appendFile_ ? std::ios::app : std::ios::trunc);
+        auto fileStream = std::make_unique<std::ofstream>(config.filePath_, openMode);
         if (!fileStream->is_open())
         {
+            fileStream_.reset();
             return false;
         }
 
         fileStream_ = std::move(fileStream);
         return true;
-    }
-
-    bool Logger::EnableConsoleOutput(bool createIfMissing)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        consoleColorEnabled_ = std::getenv("NO_COLOR") == nullptr;
-        consoleEnabled_ = PrepareConsole(createIfMissing, consoleColorEnabled_);
-        return consoleEnabled_;
-    }
-
-    void Logger::SetLogLevel(LogLevel level)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        fileLevel_ = level;
-        consoleLevel_ = level;
-    }
-
-    void Logger::SetFileLogLevel(LogLevel level)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        fileLevel_ = level;
-    }
-
-    void Logger::SetConsoleLogLevel(LogLevel level)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        consoleLevel_ = level;
     }
 
     void Logger::Debug(const std::string& message)   { Log(LogLevel::Debug, message); }

@@ -18,17 +18,24 @@ namespace engine::utils
         Fatal   = 4,
     };
 
+    struct LoggerConfig
+    {
+        std::string filePath_;
+        LogLevel fileLevel_ = LogLevel::Debug;
+        LogLevel consoleLevel_ = LogLevel::Info;
+        bool enableConsole_ = false;
+        bool createConsoleIfMissing_ = false;
+        bool appendFile_ = false;
+    };
+
+    LoggerConfig MakeDefaultLoggerConfig(std::string filePath);
+
     class Logger
     {
     public:
         static Logger& Instance();
 
-        bool SetLogFile(const std::string& filePath, bool append = false);
-        bool EnableConsoleOutput(bool createIfMissing = false);
-
-        void SetLogLevel(LogLevel level);
-        void SetFileLogLevel(LogLevel level);
-        void SetConsoleLogLevel(LogLevel level);
+        bool Initialize(const LoggerConfig& config);
 
         void Debug(const std::string& message);
         void Info(const std::string& message);

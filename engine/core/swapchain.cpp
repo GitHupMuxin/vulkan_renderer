@@ -1,4 +1,3 @@
-#include <iostream>
 #include <vector>
 #include <algorithm>
 #include "engine/core/swapchain.h"
@@ -118,14 +117,12 @@ namespace engine::core
 
 		// Exit if either a graphics or a presenting queue hasn't been found
 		if (graphicsQueueNodeIndex == UINT32_MAX || presentQueueNodeIndex == UINT32_MAX) {
-			std::cerr << "Could not find a graphics and/or presenting queue!" << std::endl;
-			exit(-1);
+			LOG_FATAL("SwapChain: could not find graphics and presenting queues");
 		}
 
 		// todo : Add support for separate graphics and presenting queue
 		if (graphicsQueueNodeIndex != presentQueueNodeIndex) {
-			std::cerr << "Separate graphics and presenting queues are not supported yet!" << std::endl;
-			exit(-1);
+			LOG_FATAL("SwapChain: separate graphics and presenting queues are not supported");
 		}
 
 		this->queueNodeIndex_ = graphicsQueueNodeIndex;

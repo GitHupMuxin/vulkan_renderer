@@ -1,6 +1,7 @@
 #include <string>
 #include <memory>
 #include "app/application/application.h"
+#include "engine/utils/log.h"
 
 std::unique_ptr<app::Application> application = std::make_unique<app::Application>();
 
@@ -13,12 +14,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-	// 日志统一写到 exe 旁（VK_LOG_DIR 由 CMake 注入，不依赖运行时工作目录）
-	static std::ofstream errLog(std::string(VK_LOG_DIR) + "error.log");
-	std::cerr.rdbuf(errLog.rdbuf());
-
-	static std::ofstream outLog(std::string(VK_LOG_DIR) + "output.log");
-	std::cout.rdbuf(outLog.rdbuf());
+	auto& logger = engine::utils::Logger::Instance();
+#if !defined(NDEBUG)
+	logger.EnableConsoleOutput(true);
+	logger.SetConsoleLogLevel(engine::utils::LogLevel::Info);
+	logger.SetFileLogLevel(engine::utils::LogLevel::Debug);
+#else
+	logger.SetFileLogLevel(engine::utils::LogLevel::Info);
+#endif
+	const std::string logPath = std::string(VK_LOG_DIR) + "engine.log";
+	if (!logger.SetLogFile(logPath))
+	{
+		LOG_ERROR("Application: failed to open log file: " << logPath);
+	}
+	else
+	{
+		LOG_INFO("Application: logging initialized: " << logPath);
+	}
 
 	application->SetArgs(__argc, __argv);
 	application->InitVulkan();

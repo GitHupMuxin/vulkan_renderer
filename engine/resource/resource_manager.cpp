@@ -2,6 +2,7 @@
 #include "engine/resource/model.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/core/staging_ring_allocator.h"
+#include "engine/utils/log.h"
 
 
 namespace engine::resource
@@ -222,7 +223,6 @@ namespace engine::resource
         LOG_INFO("ResourceManager: start to load model from file: " + fileName);
         auto& device = core::Device::Instance();
 
-        std::cout << "Loading scene from " << fileName << std::endl;
 		// animationIndex = 0;
 		// animationTimer = 0.0f;
 		auto tStart = std::chrono::high_resolution_clock::now();
@@ -232,7 +232,7 @@ namespace engine::resource
 		model->CreateMeshDataBuffer();
         model->CreateDescriptorSet();
 		auto tFileLoad = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - tStart).count();
-		std::cout << "Loading took " << tFileLoad << " ms" << std::endl;
+		LOG_INFO("ResourceManager: model loaded in " << tFileLoad << " ms: " << fileName);
 
         // this->modelArray_.emplace_back(std::move(model));
         ResourceSlot<Model> slot;
@@ -249,7 +249,7 @@ namespace engine::resource
     
     EnvironmentCubeMapHandle ResourceManager::LoadSkyBox(const std::string& fileName)
     {
-        std::cout << "Loading environment from " << fileName << std::endl;
+        LOG_INFO("ResourceManager: loading environment from file: " << fileName);
         std::unique_ptr<EnvironmentCubeMap> cubeMap = std::make_unique<EnvironmentCubeMap>();
         // LoadFromFile 内部已调用 GenerateCubemaps，不要重复生成
         cubeMap->LoadFromFile(fileName, VK_FORMAT_R16G16B16A16_SFLOAT);

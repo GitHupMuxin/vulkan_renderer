@@ -1,7 +1,7 @@
 #include <assert.h>
-#include <iostream>
 #include <fstream>
 #include "engine/core/loader.h"
+#include "engine/utils/log.h"
 
 namespace engine::core
 {
@@ -28,7 +28,7 @@ namespace engine::core
             delete[] shaderCode;
         }
         else {
-            std::cerr << "Error: Could not open shader file \"" << fileName << "\"" << std::endl;
+            LOG_ERROR("Loader: could not open shader file: " << fileName);
             shaderStage.module = VK_NULL_HANDLE;
         }
 

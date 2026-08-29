@@ -1,4 +1,3 @@
-#include <iostream>
 #include <windows.h>
 #include "engine/platform/window.h"
 #include "engine/utils/log.h"
@@ -42,10 +41,7 @@ namespace engine::platform
                 wndClass.hIconSm = LoadIcon(NULL, IDI_WINLOGO);
 
                 if (!RegisterClassEx(&wndClass)) {
-                    std::cerr << "RegisterClassEx failed: " << GetLastError() << std::endl;
-                    std::string str = "RegisterClassEx failed: " + GetLastError() + '\n';
-                    LOG_ERROR(str);
-                    exit(1);
+                    LOG_FATAL("Window: RegisterClassEx failed, error code: " << GetLastError());
                 }
 
                 int screenWidth = GetSystemMetrics(SM_CXSCREEN);

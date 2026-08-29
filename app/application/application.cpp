@@ -3,6 +3,7 @@
 #include "engine/core/staging_ring_allocator.h"
 #include "engine/core/descriptor_allocator.h"
 #include "engine/core/descriptor_layout_registry.h"
+#include "engine/utils/log.h"
 
 
 namespace app
@@ -181,7 +182,7 @@ namespace app
 						filename += buffer;
 					};
 					filename.erase(std::remove(filename.begin(), filename.end(), '\n'), filename.end());
-					std::cout << filename << std::endl;
+					LOG_INFO("Application: selected glTF file: " << filename);
 				}
 #elif defined(VK_USE_PLATFORM_MACOS_MVK)
 				opengltfFileButtonClicked = true;

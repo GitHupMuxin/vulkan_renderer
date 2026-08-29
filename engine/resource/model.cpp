@@ -537,7 +537,7 @@ namespace engine::resource
 								}
 								default:
 								// Not supported by spec
-									std::cerr << "Joint component type " << jointComponentType << " not supported!" << std::endl;
+									LOG_WARN("GLTFModel: unsupported joint component type: " << jointComponentType);
 									break;
 							}
 						}
@@ -601,7 +601,7 @@ namespace engine::resource
 
 						}
 						default:
-							std::cerr << "Index component type " << accessor.componentType << " not supported!" << std::endl;
+							LOG_ERROR("GLTFModel: unsupported index component type: " << accessor.componentType);
 							return;
 					}
 				}					
@@ -692,8 +692,9 @@ namespace engine::resource
 
 			if (newSkin->joints.size() > MAX_NUM_JOINTS) 
 			{
-				std::cerr << "[WARNING] Skin " << newSkin->name << " has " << newSkin->joints.size() << " joints, which is higher than the supported maximum of " << MAX_NUM_JOINTS << "\n";
-				std::cerr << "[WARNING] glTF scene may display wrong/incomplete\n";
+				LOG_WARN("GLTFModel: skin " << newSkin->name << " has " << newSkin->joints.size()
+					<< " joints, exceeding the supported maximum " << MAX_NUM_JOINTS
+					<< "; the scene may render incompletely");
 			}
 
 			this->skins_.push_back(newSkin);
@@ -749,7 +750,7 @@ namespace engine::resource
 				return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
 		}
 
-		std::cerr << "Unknown wrap mode for getVkWrapMode: " << wrapMode << std::endl;
+		LOG_WARN("GLTFModel: unknown sampler wrap mode " << wrapMode << ", using repeat");
 		return VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	}
 
@@ -772,7 +773,7 @@ namespace engine::resource
 				return VK_FILTER_LINEAR;
 		}
 
-		std::cerr << "Unknown filter mode for getVkFilterMode: " << filterMode << std::endl;
+		LOG_WARN("GLTFModel: unknown sampler filter mode " << filterMode << ", using nearest");
 		return VK_FILTER_NEAREST;
 	}
 
@@ -1019,7 +1020,7 @@ namespace engine::resource
 						break;
 					}
 					default: {
-						std::cout << "unknown type" << std::endl;
+						LOG_WARN("GLTFModel: animation sampler has an unknown interpolation type");
 						break;
 					}
 					}
@@ -1042,7 +1043,7 @@ namespace engine::resource
 					channel.path = AnimationChannel::PathType::SCALE;
 				}
 				if (source.target_path == "weights") {
-					std::cout << "weights not yet supported, skipping channel" << std::endl;
+					LOG_WARN("GLTFModel: animation weights are not supported; skipping channel");
 					continue;
 				}
 				channel.samplerIndex = source.sampler;
@@ -1098,7 +1099,7 @@ namespace engine::resource
 				// If this model uses basis universal compressed textures, we need to transcode them
 				// So we need to initialize that transcoder once
 				if (extension == "KHR_texture_basisu") {
-					std::cout << "Model uses KHR_texture_basisu, initializing basisu transcoder\n";
+					LOG_INFO("GLTFModel: initializing Basis Universal transcoder");
 					basist::basisu_transcoder_init();
 				}
 			}
@@ -1106,7 +1107,8 @@ namespace engine::resource
 			// Check and list unsupported extensions
 			for (auto& ext : this->extensions_) {
 				if (std::find(supportedExtensions.begin(), supportedExtensions.end(), ext) == supportedExtensions.end()) {
-					std::cout << "[WARN] Unsupported extension " << ext << " detected. Scene may not work or display as intended\n";
+					LOG_WARN("GLTFModel: unsupported extension " << ext
+						<< "; the scene may not render as intended");
 				}
 			}
 
@@ -1148,7 +1150,7 @@ namespace engine::resource
 		}
 		else {
 			// TODO: throw
-			std::cerr << "Could not load gltf file: " << error << std::endl;
+			LOG_ERROR("GLTFModel: could not load glTF file: " << error);
 			return;
 		}
 
@@ -1260,11 +1262,11 @@ namespace engine::resource
 	void GLTFModel::UpdateAnimation(uint32_t index, float time)
 	{
 		if (this->animations_.empty()) {
-			std::cout << ".glTF does not contain animation." << std::endl;
+			LOG_WARN("GLTFModel: animation update requested for a model without animations");
 			return;
 		}
 		if (index > static_cast<uint32_t>(this->animations_.size()) - 1) {
-			std::cout << "No animation with index " << index << std::endl;
+			LOG_WARN("GLTFModel: animation index out of range: " << index);
 			return;
 		}
 		Animation &animation = this->animations_[index];

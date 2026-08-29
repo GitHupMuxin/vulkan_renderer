@@ -145,7 +145,7 @@ namespace engine::core
             delete[] shaderCode;
         }
         else {
-            std::cerr << "Error: Could not open shader file \"" << filename << "\"" << std::endl;
+            LOG_ERROR("Buffer: could not open shader file: " << filename);
             shaderStage.module = VK_NULL_HANDLE;
         }
 

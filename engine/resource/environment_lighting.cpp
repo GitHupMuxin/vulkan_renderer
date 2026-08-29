@@ -651,7 +651,8 @@ namespace engine::resource
 
 			auto tEnd = std::chrono::high_resolution_clock::now();
 			auto tDiff = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
-			std::cout << "Generating cube map with " << numMips << " mip levels took " << tDiff << " ms" << std::endl;
+			LOG_INFO("EnvironmentCubeMap: generated " << numMips
+				<< " mip levels in " << tDiff << " ms");
 		}
     }
 

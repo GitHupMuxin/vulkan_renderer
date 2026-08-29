@@ -1,17 +1,16 @@
 #pragma once
 
-#include <string>
-#include <iostream>
+#include <cassert>
 #include <fstream>
-#include <sstream>
 #include <memory>
 #include <mutex>
-#include <assert.h>
+#include <sstream>
+#include <string>
 
-namespace engine::utils 
+namespace engine::utils
 {
-
-    enum class LogLevel {
+    enum class LogLevel
+    {
         Debug   = 0,
         Info    = 1,
         Warning = 2,
@@ -19,45 +18,46 @@ namespace engine::utils
         Fatal   = 4,
     };
 
-    class Logger 
+    class Logger
     {
     public:
-        static Logger&                  Instance();
+        static Logger& Instance();
 
-        void                            SetLogFile(const std::string& filePath);
-        void                            SetLogLevel(LogLevel level);
+        bool SetLogFile(const std::string& filePath, bool append = false);
+        bool EnableConsoleOutput(bool createIfMissing = false);
 
-        void                            Debug(const std::string& message);
-        void                            Info(const std::string& message);
-        void                            Warning(const std::string& message);
-        void                            Error(const std::string& message);
-        void                            Fatal(const std::string& message);
+        void SetLogLevel(LogLevel level);
+        void SetFileLogLevel(LogLevel level);
+        void SetConsoleLogLevel(LogLevel level);
 
-        Logger(const Logger&)            = delete;
+        void Debug(const std::string& message);
+        void Info(const std::string& message);
+        void Warning(const std::string& message);
+        void Error(const std::string& message);
+        void Fatal(const std::string& message);
+
+        Logger(const Logger&) = delete;
         Logger& operator=(const Logger&) = delete;
 
     private:
         Logger();
         ~Logger();
 
-        void                            Log(LogLevel level, const std::string& message);
+        void Log(LogLevel level, const std::string& message);
 
-        LogLevel                        level_     = LogLevel::Debug;
-        std::mutex                      mutex_;
-        std::unique_ptr<std::ofstream>  fileStream_;
-        std::ostream*                   output_    = &std::cerr;  // 默认 stderr
+        LogLevel fileLevel_ = LogLevel::Debug;
+        LogLevel consoleLevel_ = LogLevel::Info;
+        bool consoleEnabled_ = false;
+        bool consoleColorEnabled_ = false;
+        std::mutex mutex_;
+        std::unique_ptr<std::ofstream> fileStream_;
     };
-
 } // namespace engine::utils
 
-// ---- 宏：宏调用 Logger 的函数 ----
 #define LOG_DEBUG(msg)   do { std::ostringstream _os; _os << msg; engine::utils::Logger::Instance().Debug(_os.str());   } while(0)
 #define LOG_INFO(msg)    do { std::ostringstream _os; _os << msg; engine::utils::Logger::Instance().Info(_os.str());    } while(0)
 #define LOG_WARN(msg)    do { std::ostringstream _os; _os << msg; engine::utils::Logger::Instance().Warning(_os.str()); } while(0)
 #define LOG_ERROR(msg)   do { std::ostringstream _os; _os << msg; engine::utils::Logger::Instance().Error(_os.str());   } while(0)
 #define LOG_FATAL(msg)   do { std::ostringstream _os; _os << msg; engine::utils::Logger::Instance().Fatal(_os.str());   } while(0)
 #define SUCCESS_OR_LOG(success, msg) \
-    do { if (!(success)) { LOG_FATAL(msg); assert(success); } } while(0) 
-    
-    
-    
+    do { if (!(success)) { LOG_FATAL(msg); assert(success); } } while(0)

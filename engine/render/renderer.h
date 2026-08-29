@@ -2,6 +2,7 @@
 
 #include <unordered_map>
 #include "engine/core/device.h"
+#include "engine/core/swapchain.h"
 #include "engine/render/render_pass.h"
 #include "engine/render/fullscreen_pass.h"
 #include "engine/render/render_scene.h"
@@ -95,6 +96,7 @@ namespace engine::render
 
             void                                        CreateUniformBuffers();
             void                                        DestroyUniformBuffers();
+            bool                                        ValidatePassResourceDeclarations() const;
 
         public:
             Renderer();
@@ -122,7 +124,7 @@ namespace engine::render
             void                                        Render();
             void                                        EndFrame();
 
-            void                                        UpdateUniformData();
+            void                                        UploadFrameUniformData();
 
             VkRenderPass                                GetRenderPass();
             VkPipelineCache                             GetPipelineCache();

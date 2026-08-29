@@ -63,10 +63,12 @@ set(ENGINE_SCENE_HEADERS
 set(ENGINE_RENDER_SRC
     "render/renderer.cpp"
     "render/pipeline_cache_file.cpp"
-    "render/render_pass.cpp"
+    "render/skybox_render_pass.cpp"
+    "render/pbr_render_pass.cpp"
     "render/fullscreen_pass.cpp"
     "render/render_scene.cpp"
     "render/framebuffer_attachment.cpp"
+    "render/pass_resource.cpp"
 )
 set(ENGINE_RENDER_HEADERS
     "render/renderer.h"
@@ -75,6 +77,7 @@ set(ENGINE_RENDER_HEADERS
     "render/fullscreen_pass.h"
     "render/render_scene.h"
     "render/framebuffer_attachment.h"
+    "render/pass_resource.h"
 )
 
 # --- Platform ---

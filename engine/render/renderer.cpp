@@ -14,6 +14,82 @@ namespace engine::render
 	// 每帧 timestamp 查询槽位数：[0]=FrameStart + 每个 Pass 2 个（开始/结束），预留 8 个 Pass 的容量
 	constexpr uint32_t kGpuQueryCount = 1 + 8 * 2;
 
+	namespace
+	{
+		std::string_view GetResourceUsageName(ResourceUsage usage) noexcept
+		{
+			switch (usage)
+			{
+				case ResourceUsage::UniformBuffer:   return "UniformBuffer";
+				case ResourceUsage::StorageBuffer:   return "StorageBuffer";
+				case ResourceUsage::SampledImage:    return "SampledImage";
+				case ResourceUsage::ColorAttachment: return "ColorAttachment";
+				case ResourceUsage::DepthAttachment: return "DepthAttachment";
+			}
+
+			return "Unknown";
+		}
+
+		bool IsUsageCompatible(RenderResourceType type, ResourceUsage usage) noexcept
+		{
+			switch (usage)
+			{
+				case ResourceUsage::UniformBuffer:
+				case ResourceUsage::StorageBuffer:
+					return type == RenderResourceType::Buffer || type == RenderResourceType::BufferCollection;
+
+				case ResourceUsage::SampledImage:
+					return type == RenderResourceType::Image || type == RenderResourceType::ImageCollection;
+
+				case ResourceUsage::ColorAttachment:
+				case ResourceUsage::DepthAttachment:
+					return type == RenderResourceType::Image;
+			}
+
+			return false;
+		}
+
+		bool IsAccessCompatible(ResourceAccess access, ResourceUsage usage) noexcept
+		{
+			switch (usage)
+			{
+				case ResourceUsage::UniformBuffer:
+				case ResourceUsage::SampledImage:
+					return access == ResourceAccess::Read;
+
+				case ResourceUsage::ColorAttachment:
+				case ResourceUsage::DepthAttachment:
+					return access == ResourceAccess::Write || access == ResourceAccess::ReadWrite;
+
+				case ResourceUsage::StorageBuffer:
+					return true;
+			}
+
+			return false;
+		}
+
+		bool IsLayoutCompatible(VkImageLayout layout, ResourceUsage usage) noexcept
+		{
+			switch (usage)
+			{
+				case ResourceUsage::UniformBuffer:
+				case ResourceUsage::StorageBuffer:
+					return layout == VK_IMAGE_LAYOUT_UNDEFINED;
+
+				case ResourceUsage::SampledImage:
+					return layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || layout == VK_IMAGE_LAYOUT_GENERAL;
+
+				case ResourceUsage::ColorAttachment:
+					return layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL || layout == VK_IMAGE_LAYOUT_GENERAL;
+
+				case ResourceUsage::DepthAttachment:
+					return layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || layout == VK_IMAGE_LAYOUT_GENERAL;
+			}
+
+			return false;
+		}
+	}
+
     Renderer::Renderer()
     {
 		this->frameCount_ = core::Device::Instance().GetSetting().frameCount_;
@@ -29,24 +105,24 @@ namespace engine::render
     void Renderer::PrepareFrame()
     {
 		LOG_INFO("Renderer: start to prepare frame...");
-        this->renderPassInitInfo_.swapChain_ = &this->swapChain_;
-        this->renderPassInitInfo_.multiSamplingEnabled_ = this->rendererDescription_.multiSampling_;
+		if (!this->ValidatePassResourceDeclarations())
+		{
+			LOG_FATAL("Renderer: pass resource declaration validation failed.");
+		}
+
 		this->renderPassInitInfo_.pipelineCache_ = &this->pipelineCache_;
 		this->renderPassInitInfo_.mainRenderPass_ = &this->mainRenderPass_;
 		this->renderPassInitInfo_.matricesUBOBuffers_ = &this->matricesUBOBuffers_;
 		this->renderPassInitInfo_.paramsUBOBuffers_ = &this->paramsUBOBuffers_;
-		// Pass 的 SetUpDescriptorSetLayout 在 ExecutePreProcess 阶段就会访问 renderScene_
-		// （解析环境贴图 handle），这里先指向第一个 slot，避免空指针
-		this->renderPassInitInfo_.renderScene_ = &this->renderScenes_[0];
-    
         for (auto& renderPass : this->renderPasses_)
         {
             renderPass->Init(this->renderPassInitInfo_);
         }
 
+		const RenderScene& setupScene = this->renderScenes_[0];
 		for (auto& renderPass : this->renderPasses_)
 		{
-			renderPass->ExecutePreProcess();
+			renderPass->ExecutePreProcess(setupScene);
 		}
     }
 
@@ -193,7 +269,89 @@ namespace engine::render
             "Failed to create pipeline cache"
 		);
 		device.SetObjectName(VK_OBJECT_TYPE_PIPELINE_CACHE, reinterpret_cast<uint64_t>(this->pipelineCache_), "Renderer Pipeline Cache");
-    }    
+    }
+
+	bool Renderer::ValidatePassResourceDeclarations() const
+	{
+		bool valid = true;
+		uint32_t usageCount = 0;
+
+		for (const auto& renderPass : this->renderPasses_)
+		{
+			const auto usages = renderPass->GetResourceUsages();
+			usageCount += static_cast<uint32_t>(usages.size());
+
+			for (size_t i = 0; i < usages.size(); ++i)
+			{
+				const PassResourceUsage& usage = usages[i];
+				const RenderResourceDescription* description = FindRenderResourceDescription(usage.resource_);
+
+				for (size_t j = 0; j < i; ++j)
+				{
+					if (usages[j].resource_ == usage.resource_)
+					{
+						LOG_ERROR(
+							"Pass resource declaration: " << renderPass->GetName()
+							<< " declares " << (description ? description->name_ : "an unknown resource")
+							<< " more than once."
+						);
+						valid = false;
+						break;
+					}
+				}
+
+				if (description == nullptr)
+				{
+					LOG_ERROR(
+						"Pass resource declaration: " << renderPass->GetName()
+						<< " uses unregistered resource ID " << static_cast<uint32_t>(usage.resource_) << "."
+					);
+					valid = false;
+					continue;
+				}
+
+				if (!IsUsageCompatible(description->type_, usage.usage_))
+				{
+					LOG_ERROR(
+						"Pass resource declaration: " << renderPass->GetName()
+						<< " uses " << description->name_ << " as " << GetResourceUsageName(usage.usage_)
+						<< ", but the registered resource type is incompatible."
+					);
+					valid = false;
+				}
+
+				if (!IsAccessCompatible(usage.access_, usage.usage_))
+				{
+					LOG_ERROR(
+						"Pass resource declaration: " << renderPass->GetName()
+						<< " has incompatible access for " << description->name_
+						<< " used as " << GetResourceUsageName(usage.usage_) << "."
+					);
+					valid = false;
+				}
+
+				if (!IsLayoutCompatible(usage.requiredLayout_, usage.usage_))
+				{
+					LOG_ERROR(
+						"Pass resource declaration: " << renderPass->GetName()
+						<< " has incompatible image layout " << static_cast<int32_t>(usage.requiredLayout_)
+						<< " for " << description->name_ << " used as " << GetResourceUsageName(usage.usage_) << "."
+					);
+					valid = false;
+				}
+			}
+		}
+
+		if (valid)
+		{
+			LOG_INFO(
+				"Renderer: validated " << usageCount << " resource declarations across "
+				<< this->renderPasses_.size() << " passes."
+			);
+		}
+
+		return valid;
+	}
 
 	void Renderer::SavePipelineCache()
 	{
@@ -950,7 +1108,7 @@ namespace engine::render
 		uint32_t queryIndex = 1;
 
 		// 每帧使用当前 frame slot 的 RenderScene（由 SetRenderScene 从组合层填充）
-		this->renderPassInitInfo_.renderScene_ = &this->renderScenes_[this->frameIndex_];
+		const RenderScene& renderScene = this->renderScenes_[this->frameIndex_];
 
 		for (auto& renderPass : this->renderPasses_) 
 		{
@@ -959,7 +1117,7 @@ namespace engine::render
 				vkCmdWriteTimestamp(this->currentCB_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frameContext.queryPool_, queryIndex);
 			}
 
-			renderPass->Execute(currentCB_, this->frameIndex_);
+			renderPass->Execute(currentCB_, this->frameIndex_, renderScene);
 
 			if (this->timestampQuerySupported_)
 			{
@@ -970,7 +1128,7 @@ namespace engine::render
 		}
 	}
 
-    void Renderer::UpdateUniformData()
+    void Renderer::UploadFrameUniformData()
 	{
 		const RenderScene& rs = this->renderScenes_[this->frameIndex_];
 
@@ -1013,12 +1171,7 @@ namespace engine::render
 			"Renderer: Failed to end command buffer."
 		);
 
-		// Update UBOs
-		this->UpdateUniformData();
-		for (auto& renderPass : this->renderPasses_) 
-		{
-			renderPass->UpdateUniformData(this->frameIndex_);
-		}
+		this->UploadFrameUniformData();
 
 		const VkPipelineStageFlags waitDstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		VkSubmitInfo submitInfo{};
@@ -1088,7 +1241,7 @@ namespace engine::render
 
         vkDeviceWaitIdle(device.GetLogicalDeviceHandle());
 
-        if (this->pipelineCache_ != VK_NULL_HANDLE) 
+        if (this->pipelineCache_ != VK_NULL_HANDLE)
 		{
 			this->SavePipelineCache();
 			vkDestroyPipelineCache(device.GetLogicalDeviceHandle(), this->pipelineCache_, nullptr);

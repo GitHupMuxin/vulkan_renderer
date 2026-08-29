@@ -1,53 +1,42 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include <span>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
-#include "engine/core/device.h"
-#include "engine/core/swapchain.h"
+
+#include <vulkan/vulkan.h>
+
 #include "engine/core/buffer.h"
-#include "engine/render/fullscreen_pass.h"
+#include "engine/render/pass_resource.h"
 #include "engine/render/render_scene.h"
 #include "engine/resource/texture.h"
-#include "engine/resource/resource_manager.h"
 
 namespace engine::render
 {
-    struct DescriptorSetCount
-    {
-        uint32_t uniformBufferCount = 0;
-        uint32_t imageSamplerCount = 0;
-        uint32_t storageBufferCount = 0;
-        uint32_t maxSets = 0;
-
-        DescriptorSetCount operator+(DescriptorSetCount other);
-    };
+    struct FullScreenPassConfig;
 
     struct RenderPassInitInfo
     {
-        public:
-            bool                        multiSamplingEnabled_;
-            engine::core::SwapChain*    swapChain_;
-            const RenderScene*          renderScene_;
-            VkPipelineCache*            pipelineCache_;
-            VkRenderPass*               mainRenderPass_;
-            // 共享 UBO buffers（Renderer 持有，Pass 填 descriptor 时引用）
-            std::vector<core::Buffer>*  matricesUBOBuffers_;
-            std::vector<core::Buffer>*  paramsUBOBuffers_;
+        VkPipelineCache*                            pipelineCache_{ nullptr };
+        VkRenderPass*                               mainRenderPass_{ nullptr };
+        // 共享 UBO buffers（Renderer 持有，Pass 填 descriptor 时引用）
+        std::vector<core::Buffer>*                  matricesUBOBuffers_{ nullptr };
+        std::vector<core::Buffer>*                  paramsUBOBuffers_{ nullptr };
     };
 
     class RenderPass
     {
         protected:
-            RenderPassInitInfo          initInfo_; 
-            virtual void                PreProcess() = 0;
+            RenderPassInitInfo                          initInfo_;
         public:
-            RenderPass();
-            virtual ~RenderPass();
-            virtual void                UpdateUniformData(uint32_t frameIndex) = 0;
-            virtual void                Init(const RenderPassInitInfo& initInfo) = 0;
-            virtual void                ExecutePreProcess() = 0;
-            virtual void                Execute(VkCommandBuffer currentCB, uint32_t frameIndex) = 0;
-            virtual void                Cleanup() = 0;
+            virtual ~RenderPass() = default;
+            void                                        Init(const RenderPassInitInfo& initInfo) { initInfo_ = initInfo; }
+            virtual std::string_view                    GetName() const noexcept = 0;
+            virtual std::span<const PassResourceUsage>  GetResourceUsages() const noexcept = 0;
+            virtual void                                ExecutePreProcess(const RenderScene& renderScene) = 0;
+            virtual void                                Execute(VkCommandBuffer currentCB, uint32_t frameIndex, const RenderScene& renderScene) = 0;
     };
 
     class SkyBoxRenderPass : public RenderPass
@@ -58,19 +47,17 @@ namespace engine::render
             VkPipelineLayout                            pipelineLayout_{ VK_NULL_HANDLE };
             std::unordered_map<std::string, VkPipeline> pipelines_;
 
-            void                                        PreProcess() override;
-
-            void                                        SetUpDescriptorSetLayout();
+            void                                        SetUpDescriptorSetLayout(const RenderScene& renderScene);
             void                                        SetUpPipeline(const std::string vertexShader, const std::string fragmentShader);
+            void                                        Cleanup();
 
         public:
             SkyBoxRenderPass();
-            ~SkyBoxRenderPass();
-            void                                        UpdateUniformData(uint32_t frameIndex) override;
-            void                                        Init(const RenderPassInitInfo& initInfo) override;
-            void                                        ExecutePreProcess() override;
-            void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex) override;
-            void                                        Cleanup() override;
+            ~SkyBoxRenderPass() override;
+            std::string_view                            GetName() const noexcept override;
+            std::span<const PassResourceUsage>          GetResourceUsages() const noexcept override;
+            void                                        ExecutePreProcess(const RenderScene& renderScene) override;
+            void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex, const RenderScene& renderScene) override;
     };
 
     class PBRRenderPass : public RenderPass
@@ -93,26 +80,24 @@ namespace engine::render
 
             VkPipelineLayout                            pipelineLayout_{ VK_NULL_HANDLE };
             std::unordered_map<std::string, VkPipeline> pipelines_;
-            VkPipeline                                  boundPipeline_{ VK_NULL_HANDLE };
 
             PreProcessTextureList                       textureList_;
 
             resource::Texture2D                         PreComputeTexture(const FullScreenPassConfig& config);
 
-            void                                        PreProcess() override;
-            void                                        SetUpDescriptorSetLayout();
+            void                                        SetUpDescriptorSetLayout(const RenderScene& renderScene);
             void                                        SetUpPipeline(const std::string vertexShader, const std::string fragmentShader);
             void                                        DrawQueue(const std::vector<RenderItem>& items, VkCommandBuffer cb, uint32_t frameIndex);
             VkPipeline                                  SelectPipeline(PipelineVariant variant);
-        public:        
+            void                                        Cleanup();
+        public:
 
             PBRRenderPass();
-            ~PBRRenderPass();
-            void                                        UpdateUniformData(uint32_t frameIndex) override;
-            void                                        Init(const RenderPassInitInfo& initInfo) override;
-            void                                        ExecutePreProcess() override;
-            void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex) override;
-            void                                        Cleanup() override;
+            ~PBRRenderPass() override;
+            std::string_view                            GetName() const noexcept override;
+            std::span<const PassResourceUsage>          GetResourceUsages() const noexcept override;
+            void                                        ExecutePreProcess(const RenderScene& renderScene) override;
+            void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex, const RenderScene& renderScene) override;
 
     };
 }

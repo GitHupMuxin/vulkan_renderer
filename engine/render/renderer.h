@@ -7,6 +7,7 @@
 #include "engine/render/fullscreen_pass.h"
 #include "engine/render/render_scene.h"
 #include "engine/render/framebuffer_attachment.h"
+#include "engine/render/frame_graph.h"
 
 namespace engine::render
 {
@@ -46,6 +47,8 @@ namespace engine::render
             VkCommandPool                               commandPool_ = VK_NULL_HANDLE;
 
             std::vector<std::unique_ptr<RenderPass>>    renderPasses_;
+
+            FrameGraph                                  frameGraph_;
 
             VkPipelineCache                             pipelineCache_ = VK_NULL_HANDLE;
             uint32_t                                    frameCount_ = 0;
@@ -107,7 +110,9 @@ namespace engine::render
 
             void                                        PrepareFrame();
             void                                        Init(engine::platform::Window& window);            
-            void                                        AddRenderPass(std::unique_ptr<RenderPass> renderPass); 
+            FrameGraphNodeId                            AddRenderPass(std::unique_ptr<RenderPass> renderPass);
+            void                                        AddRenderPassDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceId resourceId, ResourceHazard hazard);
+            bool                                        RebuildFrameGraph();
 
             // 每帧由组合层（app）传入：把提取好的 RenderScene 拷入当前 frame slot
             void                                        SetRenderScene(const RenderScene& renderScene);

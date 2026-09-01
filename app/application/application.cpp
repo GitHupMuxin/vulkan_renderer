@@ -62,9 +62,23 @@ namespace app
         this->renderer_->Init(this->window_);
     }
 
-    void Application::AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass)
+    engine::render::FrameGraphNodeId Application::AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass)
     {
-        this->renderer_->AddRenderPass(std::move(renderPass));
+        return this->renderer_->AddRenderPass(std::move(renderPass));
+    }
+
+    void Application::AddRenderPassDependency(
+        engine::render::FrameGraphNodeId sourceNodeId,
+        engine::render::FrameGraphNodeId destinationNodeId,
+        engine::render::RenderResourceId resourceId,
+        engine::render::ResourceHazard hazard)
+    {
+        this->renderer_->AddRenderPassDependency(sourceNodeId, destinationNodeId, resourceId, hazard);
+    }
+
+    bool Application::RebuildFrameGraph()
+    {
+        return this->renderer_->RebuildFrameGraph();
     }
 
     void Application::PrepareFrame()

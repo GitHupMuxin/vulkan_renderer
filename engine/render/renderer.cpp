@@ -114,10 +114,16 @@ namespace engine::render
 		this->renderPassInitInfo_.mainRenderPass_ = &this->mainRenderPass_;
 		this->renderPassInitInfo_.matricesUBOBuffers_ = &this->matricesUBOBuffers_;
 		this->renderPassInitInfo_.paramsUBOBuffers_ = &this->paramsUBOBuffers_;
+
         for (auto& renderPass : this->renderPasses_)
         {
             renderPass->Init(this->renderPassInitInfo_);
         }
+
+		if (!this->RebuildFrameGraph())
+		{
+			LOG_FATAL("Renderer: failed to rebuild FrameGraph.");
+		}
 
 		const RenderScene& setupScene = this->renderScenes_[0];
 		for (auto& renderPass : this->renderPasses_)
@@ -160,9 +166,42 @@ namespace engine::render
     }
 
 
-    void Renderer::AddRenderPass(std::unique_ptr<RenderPass> renderPass)
+    FrameGraphNodeId Renderer::AddRenderPass(std::unique_ptr<RenderPass> renderPass)
 	{
-		this->renderPasses_.emplace_back(std::move(renderPass));	
+		if (!renderPass)
+		{
+			LOG_ERROR("Renderer: cannot add a null RenderPass.");
+			return kInvalidFrameGraphNodeId;
+		}
+
+		const RenderPassIndex renderPassIndex = static_cast<RenderPassIndex>(this->renderPasses_.size());
+		const FrameGraphNodeId nodeId = this->frameGraph_.AddPassNode(
+			renderPassIndex,
+			renderPass->GetName(),
+			renderPass->GetResourceUsages()
+		);
+
+		if (nodeId == kInvalidFrameGraphNodeId)
+		{
+			return nodeId;
+		}
+
+		this->renderPasses_.emplace_back(std::move(renderPass));
+		return nodeId;
+	}
+
+	void Renderer::AddRenderPassDependency(
+		FrameGraphNodeId sourceNodeId,
+		FrameGraphNodeId destinationNodeId,
+		RenderResourceId resourceId,
+		ResourceHazard hazard)
+	{
+		this->frameGraph_.AddDependency(sourceNodeId, destinationNodeId, resourceId, hazard);
+	}
+
+	bool Renderer::RebuildFrameGraph()
+	{
+		return this->frameGraph_.Rebuild();
 	}
 	
 	void Renderer::SetRenderScene(const RenderScene& renderScene)
@@ -1110,14 +1149,36 @@ namespace engine::render
 		// 每帧使用当前 frame slot 的 RenderScene（由 SetRenderScene 从组合层填充）
 		const RenderScene& renderScene = this->renderScenes_[this->frameIndex_];
 
-		for (auto& renderPass : this->renderPasses_) 
+		if (this->frameGraph_.NeedsRebuild())
 		{
+			LOG_ERROR("Renderer: FrameGraph must be rebuilt before rendering.");
+			return;
+		}
+
+		const FrameGraphExecutionPlan& executionPlan = this->frameGraph_.GetExecutionPlan();
+		if (!executionPlan.valid_)
+		{
+			LOG_ERROR("Renderer: FrameGraph execution plan is invalid.");
+			return;
+		}
+
+		for (FrameGraphNodeId nodeId : executionPlan.nodeIds_)
+		{
+			const FrameGraphPassNode& node = this->frameGraph_.GetNode(nodeId);
+			if (node.renderPassIndex_ >= this->renderPasses_.size())
+			{
+				LOG_ERROR("Renderer: FrameGraph node contains an invalid RenderPassIndex.");
+				return;
+			}
+
+			RenderPass& renderPass = *this->renderPasses_[node.renderPassIndex_];
+
 			if (this->timestampQuerySupported_)
 			{
 				vkCmdWriteTimestamp(this->currentCB_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frameContext.queryPool_, queryIndex);
 			}
 
-			renderPass->Execute(currentCB_, this->frameIndex_, renderScene);
+			renderPass.Execute(currentCB_, this->frameIndex_, renderScene);
 
 			if (this->timestampQuerySupported_)
 			{

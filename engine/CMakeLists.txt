@@ -69,6 +69,7 @@ set(ENGINE_RENDER_SRC
     "render/render_scene.cpp"
     "render/framebuffer_attachment.cpp"
     "render/pass_resource.cpp"
+    "render/frame_graph.cpp"
 )
 set(ENGINE_RENDER_HEADERS
     "render/renderer.h"
@@ -78,6 +79,7 @@ set(ENGINE_RENDER_HEADERS
     "render/render_scene.h"
     "render/framebuffer_attachment.h"
     "render/pass_resource.h"
+    "render/frame_graph.h"
 )
 
 # --- Platform ---

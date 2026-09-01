@@ -58,7 +58,9 @@ namespace app
             void                                        InitVulkan();
             void                                        SetUpWindow(HINSTANCE hInstance, WNDPROC wndproc);
             void                                        InitRenderer();
-            void                                        AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass);
+            engine::render::FrameGraphNodeId            AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass);
+            void                                        AddRenderPassDependency(engine::render::FrameGraphNodeId sourceNodeId, engine::render::FrameGraphNodeId destinationNodeId, engine::render::RenderResourceId resourceId, engine::render::ResourceHazard hazard);
+            bool                                        RebuildFrameGraph();
             void                                        PrepareFrame();
             void                                        InitResourceManager();
             void                                        InitCamera();

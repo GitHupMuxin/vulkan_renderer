@@ -94,7 +94,6 @@ const float c_MinRoughness = 0.04;
 const float PBR_WORKFLOW_METALLIC_ROUGHNESS = 0.0;
 const float PBR_WORKFLOW_SPECULAR_GLOSSINESS = 1.0;
 
-#include "includes/tonemapping.glsl"
 #include "includes/srgbtolinear.glsl"
 
 // Find the normal for this fragment, pulling either from a predefined normal map
@@ -134,9 +133,9 @@ vec3 getIBLContribution(PBRInfo pbrInputs, vec3 n, vec3 reflection)
 	float lod = (pbrInputs.perceptualRoughness * uboParams.prefilteredCubeMipLevels);
 	// retrieve a scale and bias to F0. See [1], Figure 3
 	vec3 brdf = (texture(samplerBRDFLUT, vec2(pbrInputs.NdotV, 1.0 - pbrInputs.perceptualRoughness))).rgb;
-	vec3 diffuseLight = SRGBtoLINEAR(tonemap(texture(samplerIrradiance, n))).rgb;
+	vec3 diffuseLight = texture(samplerIrradiance, n).rgb;
 
-	vec3 specularLight = SRGBtoLINEAR(tonemap(textureLod(prefilteredMap, reflection, lod))).rgb;
+	vec3 specularLight = textureLod(prefilteredMap, reflection, lod).rgb;
 
 	vec3 diffuse = diffuseLight * pbrInputs.diffuseColor;
 	vec3 specular = specularLight * (pbrInputs.specularColor * brdf.x + brdf.y);

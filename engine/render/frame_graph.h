@@ -7,56 +7,62 @@
 #include <vector>
 
 #include "engine/render/pass_resource.h"
+#include "engine/render/render_pass.h"
 
 namespace engine::render
 {
+    class RenderPass;
+
     using FrameGraphNodeId = uint32_t;
     using RenderPassIndex = uint32_t;
 
     constexpr FrameGraphNodeId kInvalidFrameGraphNodeId = UINT32_MAX;
-    constexpr RenderPassIndex kInvalidRenderPassIndex = UINT32_MAX;
 
-    enum class ResourceHazard
-    {
-        ReadAfterWrite,
-        WriteAfterRead,
-        WriteAfterWrite
-    };
-
-    // Node 对另一个 Node 的显式依赖，并记录这项依赖对应的资源访问冲突。
-    struct FrameGraphPassDependency
-    {
-        FrameGraphNodeId sourceNodeId_ = kInvalidFrameGraphNodeId;
-        RenderResourceId resourceId_{};
-        ResourceHazard hazard_{};
-    };
-
-    // Node 只保存算法所需声明和实际 Pass 下标，不拥有 RenderPass。
+    // Node 只保存 Pass 关联和显式依赖；资源使用声明仍由对应 RenderPass 提供。
     struct FrameGraphPassNode
     {
         FrameGraphNodeId nodeId_ = kInvalidFrameGraphNodeId;
-        RenderPassIndex renderPassIndex_ = kInvalidRenderPassIndex;
-
         std::string name_;
-        std::vector<PassResourceUsage> resourceUsages_;
-        std::vector<FrameGraphPassDependency> dependencies_;
+        RenderPass* renderPass_ = nullptr;
     };
 
     // Edge 只表示两个 Node 之间的有向关系。
-    struct FrameGraphEdge
+    struct FrameGraphEdgeDependency
     {
         FrameGraphNodeId fromNodeId_ = kInvalidFrameGraphNodeId;
         FrameGraphNodeId toNodeId_ = kInvalidFrameGraphNodeId;
+        RenderResourceId resourceId_{};
+    };
+
+    struct CompiledResourceBarrier
+    {
+        RenderResourceId resourceId_{};
+        PassResourceUsage srcUsage_{};
+        PassResourceUsage dstUsage_{};
+    };
+
+    struct CompiledAttachmentDependency
+    {
+        RenderResourceId    resourceId_{};
+        PassResourceUsage   srcUsage_{};
+        PassResourceUsage   dstUsage_{};
+    };
+
+    struct CompiledPass
+    {
+        FrameGraphNodeId nodeId_ = kInvalidFrameGraphNodeId;
+        std::vector<CompiledAttachmentDependency> attachmentDependencies_;
+        std::vector<CompiledResourceBarrier> barriersBefore_;
     };
 
     struct FrameGraphExecutionPlan
     {
-        std::vector<FrameGraphNodeId> nodeIds_;
+        std::vector<CompiledPass> passes_;
         bool valid_ = false;
 
         void Reset() noexcept
         {
-            this->nodeIds_.clear();
+            this->passes_.clear();
             this->valid_ = false;
         }
     };
@@ -64,21 +70,21 @@ namespace engine::render
     class FrameGraph
     {
         private:
-            std::vector<FrameGraphPassNode> nodes_;
-            std::vector<FrameGraphEdge> edges_;
+            std::unordered_map<FrameGraphNodeId, FrameGraphPassNode> nodes_;
+            std::unordered_map<FrameGraphNodeId, std::vector<FrameGraphEdgeDependency>> nodeDependencies_;
             FrameGraphExecutionPlan executionPlan_;
 
             bool needsRebuild_ = true;
 
-            void BuildEdges();
+            bool HasNode(FrameGraphNodeId nodeId) const noexcept;
             bool BuildExecutionPlan();
         public:
             void Reset();
 
-            FrameGraphNodeId AddPassNode(RenderPassIndex renderPassIndex, std::string_view name, std::span<const PassResourceUsage> resourceUsages);
+            FrameGraphNodeId AddPassNode(std::string_view name, RenderPass* renderPass);
 
-            // 按照 src -> dst 的方向，将显式依赖保存到目标 Node。
-            void AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceId resourceId, ResourceHazard hazard);
+            // 按照 src -> dst 的方向，将显式依赖保存到源 Node 的出边表。
+            void AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceId resourceId);
 
             // 显式重构 Edge 和 ExecutionPlan；没有变化时直接返回已有结果。
             bool Rebuild();

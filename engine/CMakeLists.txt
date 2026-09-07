@@ -67,9 +67,13 @@ set(ENGINE_RENDER_SRC
     "render/pbr_render_pass.cpp"
     "render/fullscreen_pass.cpp"
     "render/render_scene.cpp"
-    "render/framebuffer_attachment.cpp"
+"render/render_image.cpp"
     "render/pass_resource.cpp"
     "render/frame_graph.cpp"
+    "render/tone_mapping_render_pass.cpp"
+    "render/render_context.cpp"
+    "render/render_resource_registry.cpp"
+    "render/render_pass.cpp"
 )
 set(ENGINE_RENDER_HEADERS
     "render/renderer.h"
@@ -77,9 +81,11 @@ set(ENGINE_RENDER_HEADERS
     "render/render_pass.h"
     "render/fullscreen_pass.h"
     "render/render_scene.h"
-    "render/framebuffer_attachment.h"
+"render/render_image.h"
     "render/pass_resource.h"
     "render/frame_graph.h"
+    "render/render_context.h"
+    "render/render_resource_registry.h"
 )
 
 # --- Platform ---

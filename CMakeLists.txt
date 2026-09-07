@@ -7,6 +7,10 @@ set(NAME Vulkan-glTF-PBR)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(${NAME})
 
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 include_directories(external)
 include_directories(external/glm)
 include_directories(external/gli)

@@ -1,12 +1,15 @@
 #include "engine/render/pipeline_cache_file.h"
+#include "engine/core/device.h"
 #include "engine/utils/log.h"
 
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -16,6 +19,7 @@ namespace engine::render
 {
     namespace
     {
+        constexpr size_t kMaxPipelineCachePayloadSize = 64u * 1024u * 1024u;
         constexpr uint32_t kPipelineCacheFileMagic = 0x31435056; // "VPC1"（little-endian）
         constexpr uint32_t kPipelineCacheFileVersion = 1;
         constexpr uint32_t kPipelineCacheFileHeaderSize = 5u * sizeof(uint32_t);
@@ -122,7 +126,7 @@ namespace engine::render
         }
     }
 
-    std::vector<uint8_t> LoadPipelineCacheFile(const VkPhysicalDeviceProperties& properties)
+    static std::vector<uint8_t> LoadPipelineCacheFile(const VkPhysicalDeviceProperties& properties)
     {
         const auto& path = GetPipelineCachePath();
         std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -195,7 +199,7 @@ namespace engine::render
         return payload;
     }
 
-    bool SavePipelineCacheFile(const std::vector<uint8_t>& payload)
+    static bool SavePipelineCacheFile(const std::vector<uint8_t>& payload)
     {
         if (payload.empty() ||
             payload.size() > kMaxPipelineCachePayloadSize ||
@@ -258,5 +262,108 @@ namespace engine::render
 
         LOG_INFO("Pipeline cache: saved " << payload.size() << " bytes to " << path.string());
         return true;
+    }
+
+    PipelineCache& PipelineCache::Instance() noexcept
+    {
+        static PipelineCache instance;
+        return instance;
+    }
+
+    void PipelineCache::Init()
+    {
+        if (this->handle_ != VK_NULL_HANDLE)
+        {
+            return;
+        }
+
+        LOG_INFO("Pipeline cache: start to initialize...");
+        auto& device = core::Device::Instance();
+        const std::vector<uint8_t> cacheData = LoadPipelineCacheFile(device.GetDeviceProperties());
+
+        VkPipelineCacheCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        createInfo.initialDataSize = cacheData.size();
+        createInfo.pInitialData = cacheData.empty() ? nullptr : cacheData.data();
+
+        VkResult result = vkCreatePipelineCache(
+            device.GetLogicalDeviceHandle(), &createInfo, nullptr, &this->handle_
+        );
+        if (result != VK_SUCCESS && !cacheData.empty())
+        {
+            LOG_WARN("Pipeline cache: driver rejected persisted data (VkResult " << result << "), retrying empty cache");
+            this->handle_ = VK_NULL_HANDLE;
+            createInfo.initialDataSize = 0;
+            createInfo.pInitialData = nullptr;
+            result = vkCreatePipelineCache(
+                device.GetLogicalDeviceHandle(), &createInfo, nullptr, &this->handle_
+            );
+        }
+
+        SUCCESS_OR_LOG(result == VK_SUCCESS, "Failed to create pipeline cache");
+        device.SetObjectName(
+            VK_OBJECT_TYPE_PIPELINE_CACHE,
+            reinterpret_cast<uint64_t>(this->handle_),
+            "Renderer Pipeline Cache"
+        );
+    }
+
+    void PipelineCache::Save() const
+    {
+        if (this->handle_ == VK_NULL_HANDLE)
+        {
+            return;
+        }
+
+        auto& device = core::Device::Instance();
+        for (uint32_t attempt = 0; attempt < 3; ++attempt)
+        {
+            size_t dataSize = 0;
+            VkResult result = vkGetPipelineCacheData(
+                device.GetLogicalDeviceHandle(), this->handle_, &dataSize, nullptr
+            );
+            if (result != VK_SUCCESS || dataSize == 0 || dataSize > kMaxPipelineCachePayloadSize)
+            {
+                LOG_WARN("Pipeline cache: failed to query a valid cache data size, VkResult " << result << ", size " << dataSize);
+                return;
+            }
+
+            std::vector<uint8_t> data(dataSize);
+            result = vkGetPipelineCacheData(
+                device.GetLogicalDeviceHandle(), this->handle_, &dataSize, data.data()
+            );
+            if (result == VK_SUCCESS)
+            {
+                data.resize(dataSize);
+                SavePipelineCacheFile(data);
+                return;
+            }
+            if (result != VK_INCOMPLETE)
+            {
+                LOG_WARN("Pipeline cache: failed to retrieve cache data, VkResult " << result);
+                return;
+            }
+        }
+
+        LOG_WARN("Pipeline cache: data changed repeatedly while saving; cache was not written");
+    }
+
+    void PipelineCache::Destroy()
+    {
+        if (this->handle_ == VK_NULL_HANDLE)
+        {
+            return;
+        }
+
+        this->Save();
+        vkDestroyPipelineCache(
+            core::Device::Instance().GetLogicalDeviceHandle(), this->handle_, nullptr
+        );
+        this->handle_ = VK_NULL_HANDLE;
+    }
+
+    VkPipelineCache PipelineCache::GetHandle() const noexcept
+    {
+        return this->handle_;
     }
 }

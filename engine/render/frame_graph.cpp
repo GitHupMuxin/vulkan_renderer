@@ -1,87 +1,91 @@
 #include "engine/render/frame_graph.h"
 
 #include <queue>
+#include <optional>
 #include <utility>
+#include <unordered_map>
 
+#include "engine/render/render_pass.h"
 #include "engine/utils/log.h"
 
 namespace engine::render
 {
     namespace
     {
-        const char* GetHazardName(ResourceHazard hazard) noexcept
+        std::optional<PassResourceUsage> FindResourceUsage(std::span<const PassInputResource> resources, RenderResourceId resourceId) noexcept
         {
-            switch (hazard)
+            for (const auto& resource : resources)
             {
-                case ResourceHazard::ReadAfterWrite: return "RAW";
-                case ResourceHazard::WriteAfterRead: return "WAR";
-                case ResourceHazard::WriteAfterWrite: return "WAW";
+                if (resource.resource_ == resourceId)
+                {
+                    return GetPassResourceUsage(resource);
+                }
             }
 
-            return "Unknown";
+            return std::nullopt;
+        }
+
+        std::optional<PassResourceUsage> FindResourceUsage(std::span<const PassOutputResource> resources, RenderResourceId resourceId) noexcept
+        {
+            for (const auto& resource : resources)
+            {
+                if (resource.resource_ == resourceId)
+                {
+                    return GetPassResourceUsage(resource);
+                }
+            }
+
+            return std::nullopt;
+        }
+
+        bool IsAttachmentUsage(ResourceUsage usage) noexcept
+        {
+            return usage == ResourceUsage::ColorAttachment || usage == ResourceUsage::DepthAttachment;
         }
     }
 
     void FrameGraph::Reset()
     {
         this->nodes_.clear();
-        this->edges_.clear();
+        this->nodeDependencies_.clear();
         this->executionPlan_.Reset();
         this->needsRebuild_ = true;
     }
 
-    FrameGraphNodeId FrameGraph::AddPassNode(RenderPassIndex renderPassIndex, std::string_view name, std::span<const PassResourceUsage> resourceUsages)
+    FrameGraphNodeId FrameGraph::AddPassNode(std::string_view name, RenderPass* renderPass)
     {
-        if (renderPassIndex == kInvalidRenderPassIndex)
-        {
-            LOG_ERROR("FrameGraph: cannot add a node with an invalid RenderPassIndex.");
-            return kInvalidFrameGraphNodeId;
-        }
+        static FrameGraphNodeId nextNodeId = 0;
 
         FrameGraphPassNode node;
-        node.nodeId_ = static_cast<FrameGraphNodeId>(this->nodes_.size());
-        node.renderPassIndex_ = renderPassIndex;
+        node.nodeId_ = nextNodeId++;
         node.name_ = std::string(name);
-        node.resourceUsages_.assign(resourceUsages.begin(), resourceUsages.end());
-
-        this->nodes_.emplace_back(std::move(node));
+        node.renderPass_ = renderPass;
+        this->nodes_.insert({node.nodeId_, std::move(node)});
         this->needsRebuild_ = true;
 
-        return this->nodes_.back().nodeId_;
+        return this->nodes_.at(node.nodeId_).nodeId_;
     }
 
-    void FrameGraph::AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceId resourceId, ResourceHazard hazard)
+    bool FrameGraph::HasNode(FrameGraphNodeId nodeId) const noexcept
     {
-        if (sourceNodeId >= this->nodes_.size() ||
-            destinationNodeId >= this->nodes_.size() ||
-            sourceNodeId == destinationNodeId)
+        return this->nodes_.find(nodeId) != this->nodes_.end();
+    }
+
+    void FrameGraph::AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceId resourceId)
+    {
+        if (!this->HasNode(sourceNodeId) || !this->HasNode(destinationNodeId) || sourceNodeId == destinationNodeId)
         {
             LOG_ERROR("FrameGraph: cannot add an invalid pass dependency.");
             return;
         }
 
-        this->nodes_[destinationNodeId].dependencies_.push_back(FrameGraphPassDependency{
-            sourceNodeId,
-            resourceId,
-            hazard
+        this->nodeDependencies_[sourceNodeId].push_back(FrameGraphEdgeDependency{
+            .fromNodeId_ = sourceNodeId,
+            .toNodeId_ = destinationNodeId,
+            .resourceId_ = resourceId
         });
+
         this->needsRebuild_ = true;
-    }
-
-    void FrameGraph::BuildEdges()
-    {
-        this->edges_.clear();
-
-        for (const auto& node : this->nodes_)
-        {
-            for (const auto& dependency : node.dependencies_)
-            {
-                this->edges_.push_back(FrameGraphEdge{
-                    dependency.sourceNodeId_,
-                    node.nodeId_
-                });
-            }
-        }
     }
 
     bool FrameGraph::Rebuild()
@@ -90,8 +94,6 @@ namespace engine::render
         {
             return this->executionPlan_.valid_;
         }
-
-        this->BuildEdges();
 
         if (!this->BuildExecutionPlan())
         {
@@ -111,29 +113,39 @@ namespace engine::render
     {
         this->executionPlan_.Reset();
 
-        std::vector<uint32_t> incomingCounts(this->nodes_.size(), 0);
-        std::vector<std::vector<FrameGraphNodeId>> outgoingNodeIds(this->nodes_.size());
+        std::unordered_map<FrameGraphNodeId, uint32_t> nodeIdIn;
+        // std::unordered_map<FrameGraphNodeId, uint32_t> nodeIdOut;
+        std::unordered_map<FrameGraphNodeId, std::vector<FrameGraphEdgeDependency>> incomingEdges;
 
-        for (const auto& edge : this->edges_)
+        for (const auto& [destinationNodeId, dependencies] : this->nodeDependencies_)
         {
-            if (edge.fromNodeId_ >= this->nodes_.size() || edge.toNodeId_ >= this->nodes_.size())
+            for (const auto& edge : dependencies)
             {
-                LOG_ERROR("FrameGraph: edge contains an invalid FrameGraphNodeId.");
-                return false;
-            }
+                if (edge.fromNodeId_ >= this->nodes_.size() || edge.toNodeId_ >= this->nodes_.size())
+                {
+                    LOG_ERROR("FrameGraph: edge contains an invalid FrameGraphNodeId.");
+                    return false;
+                }
 
-            outgoingNodeIds[edge.fromNodeId_].push_back(edge.toNodeId_);
-            ++incomingCounts[edge.toNodeId_];
+                // nodeIdOut[edge.fromNodeId_]++;
+                nodeIdIn[edge.toNodeId_]++;
+            }
         }
 
         std::queue<FrameGraphNodeId> readyNodeIds;
 
-        for (FrameGraphNodeId nodeId = 0; nodeId < this->nodes_.size(); ++nodeId)
+        for (FrameGraphNodeId nodeId = 0; nodeId < this->nodes_.size(); nodeId++)
         {
-            if (incomingCounts[nodeId] == 0)
+            if (nodeIdIn[nodeId] == 0)
             {
                 readyNodeIds.push(nodeId);
             }
+        }
+
+        if (readyNodeIds.empty())
+        {
+            LOG_ERROR("FrameGraph: no nodes are ready to execute; dependency cycle detected.");
+            return false;
         }
 
         while (!readyNodeIds.empty())
@@ -141,18 +153,48 @@ namespace engine::render
             const FrameGraphNodeId nodeId = readyNodeIds.front();
             readyNodeIds.pop();
 
-            this->executionPlan_.nodeIds_.push_back(nodeId);
+            this->executionPlan_.passes_.push_back(CompiledPass{
+                .nodeId_ = nodeId
+            });
 
-            for (FrameGraphNodeId dependentNodeId : outgoingNodeIds[nodeId])
+            for (const auto& edge : this->nodeDependencies_[nodeId])
             {
-                if (--incomingCounts[dependentNodeId] == 0)
+                incomingEdges[edge.toNodeId_].push_back(edge);
+
+                nodeIdIn[edge.toNodeId_]--;
+                if (nodeIdIn[edge.toNodeId_] == 0)
                 {
-                    readyNodeIds.push(dependentNodeId);
+                    readyNodeIds.push(edge.toNodeId_);
                 }
+            }
+
+            auto& incoming = incomingEdges[nodeId];
+
+            for (auto& dependency : incoming)
+            {
+                PassResourceUsage srcUsage = this->nodes_[dependency.fromNodeId_].renderPass_->GetResourceUsage(dependency.resourceId_);
+                PassResourceUsage dstUsage = this->nodes_[dependency.toNodeId_].renderPass_->GetResourceUsage(dependency.resourceId_);
+                if (IsAttachmentUsage(srcUsage.type_) && IsAttachmentUsage(dstUsage.type_))
+                {
+                    this->executionPlan_.passes_.back().attachmentDependencies_.push_back(CompiledAttachmentDependency{
+                        .resourceId_ = dependency.resourceId_,
+                        .srcUsage_ = srcUsage,
+                        .dstUsage_ = dstUsage
+                    });
+                }
+                else
+                {
+                    this->executionPlan_.passes_.back().barriersBefore_.push_back(CompiledResourceBarrier{
+                        .resourceId_ = dependency.resourceId_,
+                        .srcUsage_ = srcUsage,
+                        .dstUsage_ = dstUsage
+                    });
+                }
+
             }
         }
 
-        if (this->executionPlan_.nodeIds_.size() != this->nodes_.size())
+        if (this->executionPlan_.passes_.size() != this->nodes_.size())
         {
             LOG_ERROR("FrameGraph: dependency cycle detected; no valid execution plan exists.");
             this->executionPlan_.Reset();
@@ -163,19 +205,18 @@ namespace engine::render
 
         LOG_INFO(
             "FrameGraph: built execution plan for " << this->nodes_.size()
-            << " nodes and " << this->edges_.size() << " edges."
+            << " nodes and " << this->nodeDependencies_.size() << " nodeDependencies."
         );
 
-        for (const auto& node : this->nodes_)
+        for (const auto& [nodeId, dependencies] : this->nodeDependencies_)
         {
-            for (const auto& dependency : node.dependencies_)
+            for (const auto& dependency : dependencies)
             {
                 const RenderResourceDescription* resource = FindRenderResourceDescription(dependency.resourceId_);
                 LOG_DEBUG(
-                    "FrameGraph: " << this->nodes_[dependency.sourceNodeId_].name_ << " -> "
-                    << node.name_ << " via "
-                    << (resource ? resource->name_ : "UnknownResource") << " "
-                    << GetHazardName(dependency.hazard_)
+                    "FrameGraph: " << this->nodes_[dependency.fromNodeId_].name_ << " -> "
+                    << this->nodes_[dependency.toNodeId_].name_ << " via "
+                    << (resource ? resource->name_ : "UnknownResource")
                 );
             }
         }

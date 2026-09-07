@@ -7,6 +7,9 @@
 #include "engine/core/device.h"
 #include "engine/core/loader.h"
 #include "engine/core/schema.h"
+#include "engine/core/swapchain.h"
+#include "engine/render/frame_graph.h"
+#include "engine/render/pipeline_cache_file.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/utils/log.h"
 
@@ -23,7 +26,7 @@ namespace engine::render
 		{
 			this->skyboxSets_[i] = core::DescriptorAllocator::Instance().AllocatePersistent(skyboxSetLayout);
 
-			std::array<VkWriteDescriptorSet, 3> writeDescriptorSets{};
+			std::array<VkWriteDescriptorSet, 2> writeDescriptorSets{};
 
 			// binding=0：相机矩阵 UBO（Renderer 共享 matricesUBO，布局 UBOMatricesUpload）
 			writeDescriptorSets[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -31,21 +34,14 @@ namespace engine::render
 			writeDescriptorSets[0].descriptorCount = 1;
 			writeDescriptorSets[0].dstSet = this->skyboxSets_[i];
 			writeDescriptorSets[0].dstBinding = 0;
-			writeDescriptorSets[0].pBufferInfo = &(*this->initInfo_.matricesUBOBuffers_)[i].descriptor;
+			writeDescriptorSets[0].pBufferInfo = &this->renderResources_->GetBuffers(RenderResourceId::MainCamera)[i].descriptor;
 
 			writeDescriptorSets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writeDescriptorSets[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			writeDescriptorSets[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			writeDescriptorSets[1].descriptorCount = 1;
 			writeDescriptorSets[1].dstSet = this->skyboxSets_[i];
-			writeDescriptorSets[1].dstBinding = 1;
-			writeDescriptorSets[1].pBufferInfo = &(*this->initInfo_.paramsUBOBuffers_)[i].descriptor;
-
-			writeDescriptorSets[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writeDescriptorSets[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			writeDescriptorSets[2].descriptorCount = 1;
-			writeDescriptorSets[2].dstSet = this->skyboxSets_[i];
-			writeDescriptorSets[2].dstBinding = 2;
-			writeDescriptorSets[2].pImageInfo = &resource::ResourceManager::Instance().GetEnvironmentCubeMap(renderScene.environment.environmentCubeMap)->prefilteredCube_.descriptor_;
+			writeDescriptorSets[1].dstBinding = 2;
+			writeDescriptorSets[1].pImageInfo = &resource::ResourceManager::Instance().GetEnvironmentCubeMap(renderScene.environment.environmentCubeMap)->prefilteredCube_.descriptor_;
 
 			vkUpdateDescriptorSets(device.GetLogicalDeviceHandle(), static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
 		}
@@ -57,8 +53,7 @@ namespace engine::render
 
 		VkDescriptorSetLayout skyboxSetLayout = core::DescriptorLayoutRegistry::Instance().GetOrCreate(schema::kSkyboxSet);
 
-		VkPipelineCache& pipelineCache = *(this->initInfo_.pipelineCache_);
-		VkRenderPass& mainRenderPass = *(this->initInfo_.mainRenderPass_);
+		VkPipelineCache pipelineCache = PipelineCache::Instance().GetHandle();
 
 		VkPipelineInputAssemblyStateCreateInfo inputAssemblyStateCI{};
 		inputAssemblyStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -144,7 +139,7 @@ namespace engine::render
 		VkGraphicsPipelineCreateInfo pipelineCI{};
 		pipelineCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 		pipelineCI.layout = this->pipelineLayout_;
-		pipelineCI.renderPass = mainRenderPass;
+		pipelineCI.renderPass = this->renderPass_;
 		pipelineCI.pInputAssemblyState = &inputAssemblyStateCI;
 		pipelineCI.pVertexInputState = &vertexInputStateCI;
 		pipelineCI.pRasterizationState = &rasterizationStateCI;
@@ -179,34 +174,67 @@ namespace engine::render
         return "SkyBoxRenderPass";
     }
 
-    std::span<const PassResourceUsage> SkyBoxRenderPass::GetResourceUsages() const noexcept
+    std::span<const PassInputResource> SkyBoxRenderPass::GetInputResources() const noexcept
     {
-        static constexpr std::array usages = {
-            PassResourceUsage{
-                RenderResourceId::MainColor,
-                ResourceAccess::Write,
-                ResourceUsage::ColorAttachment,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        static constexpr std::array inputs = {
+            PassInputResource{
+                RenderResourceId::MainCamera,
+                PassResourceUsage{
+                    ResourceUsage::UniformBuffer
+                }
             },
-            PassResourceUsage{
-                RenderResourceId::CameraMatrices,
-                ResourceAccess::Read,
-                ResourceUsage::UniformBuffer
-            },
-            PassResourceUsage{
-                RenderResourceId::RenderParams,
-                ResourceAccess::Read,
-                ResourceUsage::UniformBuffer
-            },
-            PassResourceUsage{
+            PassInputResource{
                 RenderResourceId::PrefilteredMap,
-                ResourceAccess::Read,
-                ResourceUsage::SampledImage,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                PassResourceUsage{
+                    ResourceUsage::SampledImage,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                }
             }
         };
 
-        return usages;
+        return inputs;
+    }
+
+    std::span<const PassOutputResource> SkyBoxRenderPass::GetOutputResources() const noexcept
+    {
+        static constexpr std::array outputs = {
+            PassOutputResource{
+                RenderResourceId::SceneColorHdr,
+                PassColorAttachment{
+                    .loadOp_ = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    .storeOp_ = VK_ATTACHMENT_STORE_OP_STORE,
+                    .initialLayout_ = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .finalLayout_ = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    .clearValue_ = {{0.0f, 0.0f, 0.0f, 1.0f}}
+                }
+            }
+        };
+
+        return outputs;
+    }
+
+    PassResourceUsage SkyBoxRenderPass::GetResourceUsage(RenderResourceId resourceId) const noexcept
+    {
+        switch (resourceId)
+        {
+            case RenderResourceId::MainCamera:
+                return PassResourceUsage{
+                    ResourceUsage::UniformBuffer
+                };
+            case RenderResourceId::PrefilteredMap:
+                return PassResourceUsage{
+                    ResourceUsage::SampledImage,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                };
+			case RenderResourceId::SceneColorHdr:
+				return PassResourceUsage{
+					ResourceUsage::ColorAttachment,
+					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				};
+            default:
+                LOG_ERROR("SkyBoxRenderPass: unknown resource ID.");
+                return PassResourceUsage{};
+        }
     }
 
 	SkyBoxRenderPass::SkyBoxRenderPass()
@@ -229,7 +257,7 @@ namespace engine::render
 		this->SetUpPipeline(assetPath + "shaders/skybox.vert.spv", assetPath + "shaders/skybox.frag.spv");
 	}
 
-	void SkyBoxRenderPass::Execute(VkCommandBuffer currentCB, uint32_t frameIndex, const RenderScene&)
+	void SkyBoxRenderPass::Execute(VkCommandBuffer currentCB, uint32_t frameIndex, uint32_t, const RenderScene&)
 	{
 		static auto beginLable = core::Device::Instance().GetCmdBeginDebugUtilsLabel();
 		static auto endLable = core::Device::Instance().GetCmdEndDebugUtilsLabel();

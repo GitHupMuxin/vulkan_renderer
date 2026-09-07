@@ -1,4 +1,5 @@
 #include "engine/render/renderer.h"
+#include "engine/render/render_context.h"
 #include "engine/utils/log.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/core/loader.h"
@@ -7,6 +8,7 @@
 #include "engine/render/pipeline_cache_file.h"
 
 #include <algorithm>
+#include <array>
 
 namespace engine::render
 {
@@ -30,39 +32,18 @@ namespace engine::render
 			return "Unknown";
 		}
 
-		bool IsUsageCompatible(RenderResourceType type, ResourceUsage usage) noexcept
+		bool IsUsageCompatible(const RenderResourceDescription& resource, ResourceUsage usage) noexcept
 		{
 			switch (usage)
 			{
 				case ResourceUsage::UniformBuffer:
 				case ResourceUsage::StorageBuffer:
-					return type == RenderResourceType::Buffer || type == RenderResourceType::BufferCollection;
+					return std::holds_alternative<RenderBufferDescription>(resource.description_);
 
 				case ResourceUsage::SampledImage:
-					return type == RenderResourceType::Image || type == RenderResourceType::ImageCollection;
-
 				case ResourceUsage::ColorAttachment:
 				case ResourceUsage::DepthAttachment:
-					return type == RenderResourceType::Image;
-			}
-
-			return false;
-		}
-
-		bool IsAccessCompatible(ResourceAccess access, ResourceUsage usage) noexcept
-		{
-			switch (usage)
-			{
-				case ResourceUsage::UniformBuffer:
-				case ResourceUsage::SampledImage:
-					return access == ResourceAccess::Read;
-
-				case ResourceUsage::ColorAttachment:
-				case ResourceUsage::DepthAttachment:
-					return access == ResourceAccess::Write || access == ResourceAccess::ReadWrite;
-
-				case ResourceUsage::StorageBuffer:
-					return true;
+					return std::holds_alternative<RenderImageDescription>(resource.description_);
 			}
 
 			return false;
@@ -88,48 +69,73 @@ namespace engine::render
 
 			return false;
 		}
+
+		VkPipelineStageFlags GetPipelineStage(const PassResourceUsage& usage) noexcept
+		{
+			switch (usage.type_)
+			{
+				case ResourceUsage::ColorAttachment:
+					return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+				case ResourceUsage::DepthAttachment:
+					return VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+				case ResourceUsage::UniformBuffer:
+				case ResourceUsage::StorageBuffer:
+				case ResourceUsage::SampledImage:
+					return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			}
+
+			return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+		}
+
+		VkAccessFlags GetAccessMask(const PassResourceUsage& usage, bool output) noexcept
+		{
+			switch (usage.type_)
+			{
+				case ResourceUsage::ColorAttachment:
+					return output ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+				case ResourceUsage::DepthAttachment:
+					return output ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+				case ResourceUsage::UniformBuffer:
+					return VK_ACCESS_UNIFORM_READ_BIT;
+				case ResourceUsage::SampledImage:
+					return VK_ACCESS_SHADER_READ_BIT;
+				case ResourceUsage::StorageBuffer:
+					return output ? VK_ACCESS_SHADER_WRITE_BIT : VK_ACCESS_SHADER_READ_BIT;
+			}
+
+			return 0;
+		}
+
 	}
 
     Renderer::Renderer()
     {
 		this->frameCount_ = core::Device::Instance().GetSetting().frameCount_;
-		this->frameBuffers_.resize(this->frameCount_);
     }
 
     Renderer::Renderer(const RendererDescription& description) : rendererDescription_(description)
     {
 		this->frameCount_ = core::Device::Instance().GetSetting().frameCount_;
-		this->frameBuffers_.resize(this->frameCount_);
     }
 
-    void Renderer::PrepareFrame()
+    void Renderer::PrepareFrame(const RenderContext& renderContext)
     {
-		LOG_INFO("Renderer: start to prepare frame...");
-		if (!this->ValidatePassResourceDeclarations())
-		{
-			LOG_FATAL("Renderer: pass resource declaration validation failed.");
-		}
-
-		this->renderPassInitInfo_.pipelineCache_ = &this->pipelineCache_;
-		this->renderPassInitInfo_.mainRenderPass_ = &this->mainRenderPass_;
-		this->renderPassInitInfo_.matricesUBOBuffers_ = &this->matricesUBOBuffers_;
-		this->renderPassInitInfo_.paramsUBOBuffers_ = &this->paramsUBOBuffers_;
-
-        for (auto& renderPass : this->renderPasses_)
+        this->renderContext_ = &renderContext;
+        if (!this->ValidatePassResourceDeclarations())
         {
-            renderPass->Init(this->renderPassInitInfo_);
+            LOG_FATAL("Renderer: pass resource declaration validation failed.");
         }
 
-		if (!this->RebuildFrameGraph())
-		{
-			LOG_FATAL("Renderer: failed to rebuild FrameGraph.");
-		}
-
-		const RenderScene& setupScene = this->renderScenes_[0];
-		for (auto& renderPass : this->renderPasses_)
-		{
-			renderPass->ExecutePreProcess(setupScene);
-		}
+        this->CreateResources();
+        const FrameGraph& frameGraph = this->renderContext_->GetFrameGraph();
+        for (const CompiledPass& compiledPass : frameGraph.GetExecutionPlan().passes_)
+        {
+            const FrameGraphPassNode& node = frameGraph.GetNode(compiledPass.nodeId_);
+            RenderPass* renderPass = node.renderPass_;
+            renderPass->Prepare(compiledPass, this->renderResources_, this->swapChain_, this->renderScenes_[0]);
+        }
+        this->PrepareUI();
+        LOG_INFO("Renderer: resources and render passes prepared.");
     }
 
     void Renderer::InitSwapChain(engine::platform::Window& window)
@@ -157,53 +163,13 @@ namespace engine::render
 		}
 
         this->InitCommandPool();
-        this->CreatePipelineCache();
+        PipelineCache::Instance().Init();
         this->CreateSyncObjects();
 		this->CreateFrameContexts();
-		this->CreateUniformBuffers();
-		this->CreateMainRenderPass();
-		this->CreatMainFrameBuffer();
+		this->renderScenes_.resize(this->frameCount_);
     }
 
 
-    FrameGraphNodeId Renderer::AddRenderPass(std::unique_ptr<RenderPass> renderPass)
-	{
-		if (!renderPass)
-		{
-			LOG_ERROR("Renderer: cannot add a null RenderPass.");
-			return kInvalidFrameGraphNodeId;
-		}
-
-		const RenderPassIndex renderPassIndex = static_cast<RenderPassIndex>(this->renderPasses_.size());
-		const FrameGraphNodeId nodeId = this->frameGraph_.AddPassNode(
-			renderPassIndex,
-			renderPass->GetName(),
-			renderPass->GetResourceUsages()
-		);
-
-		if (nodeId == kInvalidFrameGraphNodeId)
-		{
-			return nodeId;
-		}
-
-		this->renderPasses_.emplace_back(std::move(renderPass));
-		return nodeId;
-	}
-
-	void Renderer::AddRenderPassDependency(
-		FrameGraphNodeId sourceNodeId,
-		FrameGraphNodeId destinationNodeId,
-		RenderResourceId resourceId,
-		ResourceHazard hazard)
-	{
-		this->frameGraph_.AddDependency(sourceNodeId, destinationNodeId, resourceId, hazard);
-	}
-
-	bool Renderer::RebuildFrameGraph()
-	{
-		return this->frameGraph_.Rebuild();
-	}
-	
 	void Renderer::SetRenderScene(const RenderScene& renderScene)
 	{
 		// 存入当前 frame-in-flight 的槽（与 UBO 双缓冲同步）
@@ -215,46 +181,104 @@ namespace engine::render
 		return this->frameIndex_;
 	}
 
-    void Renderer::CreateUniformBuffers()
+    void Renderer::CreateResources()
     {
-		LOG_INFO("Renderer: start to create uniform buffers...");
-		this->renderScenes_.resize(this->frameCount_);
-		this->matricesUBOBuffers_.resize(this->frameCount_);
-		this->paramsUBOBuffers_.resize(this->frameCount_);
+        const FrameGraph& graph = this->renderContext_->GetFrameGraph();
+        // 逐个检查资源注册表并收集所有 Pass 的输入输出，累积 usage，创建内部 Buffer / Image
+        for (const auto& resource : this->renderContext_->GetResourceDescriptions())
+        {
+            if (resource.lifetime_ == RenderResourceLifetime::External)
+            {
+                continue;
+            }
 
-		for (uint32_t i = 0; i < this->frameCount_; ++i)
-		{
-			// 共享 camera 矩阵 UBO（对齐 shader set=0 binding=0）
-			this->matricesUBOBuffers_[i].Create(
-				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				sizeof(UBOMatricesUpload)
-			);
-			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(this->matricesUBOBuffers_[i].buffer), ("MatricesUBO[" + std::to_string(i) + "]").c_str());
+            VkBufferUsageFlags bufferUsage = 0;
+            VkImageUsageFlags imageUsage = 0;
+            for (const CompiledPass& compiledPass : graph.GetExecutionPlan().passes_)
+            {
+                RenderPass* pass = graph.GetNode(compiledPass.nodeId_).renderPass_;
+                const auto accumulateUsage = [&](const auto resources)
+                {
+                    for (const auto& passResource : resources)
+                    {
+                        if (passResource.resource_ != resource.id_)
+                        {
+                            continue;
+                        }
 
-			// 共享 params UBO（对齐 shader set=0 binding=1）
-			this->paramsUBOBuffers_[i].Create(
-				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				sizeof(ParamsUpload)
-			);
-			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(this->paramsUBOBuffers_[i].buffer), ("ParamsUBO[" + std::to_string(i) + "]").c_str());
-		}
+                        switch (GetPassResourceUsage(passResource).type_)
+                        {
+                            case ResourceUsage::UniformBuffer: bufferUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; break;
+                            case ResourceUsage::StorageBuffer: bufferUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; break;
+                            case ResourceUsage::SampledImage: imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT; break;
+                            case ResourceUsage::ColorAttachment: imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; break;
+                            case ResourceUsage::DepthAttachment: imageUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; break;
+                        }
+                    }
+                };
+                accumulateUsage(pass->GetInputResources());
+                accumulateUsage(pass->GetOutputResources());
+            }
+
+            if (std::holds_alternative<RenderBufferDescription>(resource.description_) && bufferUsage != 0)
+            {
+                // 窗口重建只替换图像；保留已被 Pass descriptor 引用的 Buffer。
+                if (!this->renderResources_.HasBuffers(resource.id_))
+                {
+                    this->CreateBuffer(resource, bufferUsage);
+                }
+            }
+            else if (std::holds_alternative<RenderImageDescription>(resource.description_) && imageUsage != 0)
+            {
+                auto imageResource = resource;
+                auto& description = std::get<RenderImageDescription>(imageResource.description_);
+                const VkSampleCountFlagBits samples = this->rendererDescription_.multiSampling_
+                    ? core::Device::Instance().GetMultiSampleCount() : VK_SAMPLE_COUNT_1_BIT;
+
+                // 当前输出所需的设备参数在准备时填入，CreateImage 只消费具体值。
+                switch (resource.id_)
+                {
+                    case RenderResourceId::MainDepth:
+                        description.format_ = this->swapChain_.GetDepthFormat();
+                        description.samples_ = samples;
+                        break;
+                    case RenderResourceId::MainColorMsaa:
+                        description.format_ = this->swapChain_.GetColorFormat();
+                        description.samples_ = samples;
+                        break;
+                    case RenderResourceId::MainDepthSingleSample:
+                        description.format_ = this->swapChain_.GetDepthFormat();
+                        break;
+                    default:
+                        break;
+                }
+
+                this->CreateImage(imageResource, imageUsage);
+            }
+        }
     }
 
-    void Renderer::DestroyUniformBuffers()
+    void Renderer::CreateBuffer(const RenderResourceDescription& resource, VkBufferUsageFlags usage)
     {
-		for (auto& buffer : this->matricesUBOBuffers_)
-		{
-			buffer.Destroy();
-		}
-		for (auto& buffer : this->paramsUBOBuffers_)
-		{
-			buffer.Destroy();
-		}
-		this->matricesUBOBuffers_.clear();
-		this->paramsUBOBuffers_.clear();
-		this->renderScenes_.clear();
+        auto& device = core::Device::Instance();
+        const auto& description = std::get<RenderBufferDescription>(resource.description_);
+        auto& buffers = this->renderResources_.GetOrCreateBuffers(resource.id_);
+        const uint32_t instanceCount = resource.lifetime_ == RenderResourceLifetime::Frame ? this->frameCount_ : 1;
+        buffers.resize(instanceCount);
+
+        // 当前内部 Buffer 接收 CPU 上传；Model 的设备侧 Buffer 由外部提供。
+        for (uint32_t i = 0; i < instanceCount; ++i)
+        {
+            buffers[i].Create(
+                usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                description.size_
+            );
+            const std::string name = std::string(resource.name_) + "[" + std::to_string(i) + "]";
+            device.SetObjectName(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(buffers[i].buffer), name.c_str());
+        }
+
+        LOG_INFO("Renderer: created " << resource.name_ << " buffers, instances=" << instanceCount
+            << ", bytes=" << description.size_);
     }
 
     void Renderer::InitCommandPool()
@@ -272,170 +296,101 @@ namespace engine::render
 
     }
 
-    void Renderer::CreatePipelineCache()
-    {
-		LOG_INFO("Renderer: start to create pipeline cache...");
-		auto& device = core::Device::Instance();
-		const std::vector<uint8_t> cacheData = LoadPipelineCacheFile(device.GetDeviceProperties());
-
-        VkPipelineCacheCreateInfo pipelineCacheCreateInfo{};
-        pipelineCacheCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-		pipelineCacheCreateInfo.initialDataSize = cacheData.size();
-		pipelineCacheCreateInfo.pInitialData = cacheData.empty() ? nullptr : cacheData.data();
-
-		VkResult result = vkCreatePipelineCache(
-			device.GetLogicalDeviceHandle(),
-			&pipelineCacheCreateInfo,
-			nullptr,
-			&this->pipelineCache_
-		);
-		if (result != VK_SUCCESS && !cacheData.empty())
-		{
-			LOG_WARN("Pipeline cache: driver rejected persisted data (VkResult " << result << "), retrying empty cache");
-			this->pipelineCache_ = VK_NULL_HANDLE;
-			pipelineCacheCreateInfo.initialDataSize = 0;
-			pipelineCacheCreateInfo.pInitialData = nullptr;
-			result = vkCreatePipelineCache(
-				device.GetLogicalDeviceHandle(),
-				&pipelineCacheCreateInfo,
-				nullptr,
-				&this->pipelineCache_
-			);
-		}
-
-        SUCCESS_OR_LOG(
-			result == VK_SUCCESS,
-            "Failed to create pipeline cache"
-		);
-		device.SetObjectName(VK_OBJECT_TYPE_PIPELINE_CACHE, reinterpret_cast<uint64_t>(this->pipelineCache_), "Renderer Pipeline Cache");
-    }
-
 	bool Renderer::ValidatePassResourceDeclarations() const
 	{
-		bool valid = true;
-		uint32_t usageCount = 0;
-
-		for (const auto& renderPass : this->renderPasses_)
+		const FrameGraph& frameGraph = this->renderContext_->GetFrameGraph();
+		const FrameGraphExecutionPlan& executionPlan = frameGraph.GetExecutionPlan();
+		if (frameGraph.NeedsRebuild() || !executionPlan.valid_)
 		{
-			const auto usages = renderPass->GetResourceUsages();
-			usageCount += static_cast<uint32_t>(usages.size());
+			LOG_ERROR("Renderer: Context must provide a rebuilt, valid FrameGraph.");
+			return false;
+		}
 
-			for (size_t i = 0; i < usages.size(); ++i)
+		bool valid = true;
+		uint32_t requestCount = 0;
+		const auto descriptions = this->renderContext_->GetResourceDescriptions();
+
+		for (const CompiledPass& compiledPass : executionPlan.passes_)
+		{
+			const RenderPass* renderPass = frameGraph.GetNode(compiledPass.nodeId_).renderPass_;
+			if (renderPass == nullptr)
 			{
-				const PassResourceUsage& usage = usages[i];
-				const RenderResourceDescription* description = FindRenderResourceDescription(usage.resource_);
+				LOG_ERROR("Renderer: FrameGraph node does not resolve to a Context RenderPass.");
+				valid = false;
+				continue;
+			}
 
-				for (size_t j = 0; j < i; ++j)
+			const auto validateResources = [&](const auto resources)
+			{
+				requestCount += static_cast<uint32_t>(resources.size());
+				for (size_t i = 0; i < resources.size(); ++i)
 				{
-					if (usages[j].resource_ == usage.resource_)
+					const auto& passResource = resources[i];
+					const PassResourceUsage usage = GetPassResourceUsage(passResource);
+					const auto descriptionIt = std::find_if(descriptions.begin(), descriptions.end(), [&passResource](const auto& entry){
+							return entry.id_ == passResource.resource_;
+						}
+					);
+					const RenderResourceDescription* description = descriptionIt != descriptions.end() ? &*descriptionIt : nullptr;
+
+					for (size_t j = 0; j < i; ++j)
+					{
+						if (resources[j].resource_ == passResource.resource_)
+						{
+							LOG_ERROR(
+								"Pass resource declaration: " << renderPass->GetName()
+								<< " declares " << (description ? description->name_ : "an unknown resource")
+								<< " more than once in the same input/output list."
+							);
+							valid = false;
+							break;
+						}
+					}
+
+					if (description == nullptr)
 					{
 						LOG_ERROR(
 							"Pass resource declaration: " << renderPass->GetName()
-							<< " declares " << (description ? description->name_ : "an unknown resource")
-							<< " more than once."
+							<< " uses unregistered resource ID " << static_cast<uint32_t>(passResource.resource_) << "."
 						);
 						valid = false;
-						break;
+						continue;
+					}
+
+					if (!IsUsageCompatible(*description, usage.type_))
+					{
+						LOG_ERROR(
+							"Pass resource declaration: " << renderPass->GetName()
+							<< " uses " << description->name_ << " as " << GetResourceUsageName(usage.type_)
+							<< ", but the registered resource type is incompatible."
+						);
+						valid = false;
+					}
+
+					if (!IsLayoutCompatible(usage.requiredLayout_, usage.type_))
+					{
+						LOG_ERROR(
+							"Pass resource declaration: " << renderPass->GetName()
+							<< " has incompatible image layout " << static_cast<int32_t>(usage.requiredLayout_)
+							<< " for " << description->name_ << " used as " << GetResourceUsageName(usage.type_) << "."
+						);
+						valid = false;
 					}
 				}
-
-				if (description == nullptr)
-				{
-					LOG_ERROR(
-						"Pass resource declaration: " << renderPass->GetName()
-						<< " uses unregistered resource ID " << static_cast<uint32_t>(usage.resource_) << "."
-					);
-					valid = false;
-					continue;
-				}
-
-				if (!IsUsageCompatible(description->type_, usage.usage_))
-				{
-					LOG_ERROR(
-						"Pass resource declaration: " << renderPass->GetName()
-						<< " uses " << description->name_ << " as " << GetResourceUsageName(usage.usage_)
-						<< ", but the registered resource type is incompatible."
-					);
-					valid = false;
-				}
-
-				if (!IsAccessCompatible(usage.access_, usage.usage_))
-				{
-					LOG_ERROR(
-						"Pass resource declaration: " << renderPass->GetName()
-						<< " has incompatible access for " << description->name_
-						<< " used as " << GetResourceUsageName(usage.usage_) << "."
-					);
-					valid = false;
-				}
-
-				if (!IsLayoutCompatible(usage.requiredLayout_, usage.usage_))
-				{
-					LOG_ERROR(
-						"Pass resource declaration: " << renderPass->GetName()
-						<< " has incompatible image layout " << static_cast<int32_t>(usage.requiredLayout_)
-						<< " for " << description->name_ << " used as " << GetResourceUsageName(usage.usage_) << "."
-					);
-					valid = false;
-				}
-			}
+			};
+			validateResources(renderPass->GetInputResources());
+			validateResources(renderPass->GetOutputResources());
 		}
 
 		if (valid)
 		{
 			LOG_INFO(
-				"Renderer: validated " << usageCount << " resource declarations across "
-				<< this->renderPasses_.size() << " passes."
+				"Renderer: validated " << requestCount << " resource declarations across "
+				<< executionPlan.passes_.size() << " passes."
 			);
 		}
 
 		return valid;
-	}
-
-	void Renderer::SavePipelineCache()
-	{
-		if (this->pipelineCache_ == VK_NULL_HANDLE)
-		{
-			return;
-		}
-
-		auto& device = core::Device::Instance();
-		for (uint32_t attempt = 0; attempt < 3; ++attempt)
-		{
-			size_t dataSize = 0;
-			VkResult result = vkGetPipelineCacheData(
-				device.GetLogicalDeviceHandle(),
-				this->pipelineCache_,
-				&dataSize,
-				nullptr
-			);
-			if (result != VK_SUCCESS || dataSize == 0 || dataSize > kMaxPipelineCachePayloadSize)
-			{
-				LOG_WARN("Pipeline cache: failed to query a valid cache data size, VkResult " << result << ", size " << dataSize);
-				return;
-			}
-
-			std::vector<uint8_t> data(dataSize);
-			result = vkGetPipelineCacheData(
-				device.GetLogicalDeviceHandle(),
-				this->pipelineCache_,
-				&dataSize,
-				data.data()
-			);
-			if (result == VK_SUCCESS)
-			{
-				data.resize(dataSize);
-				SavePipelineCacheFile(data);
-				return;
-			}
-			if (result != VK_INCOMPLETE)
-			{
-				LOG_WARN("Pipeline cache: failed to retrieve cache data, VkResult " << result);
-				return;
-			}
-		}
-
-		LOG_WARN("Pipeline cache: data changed repeatedly while saving; cache was not written");
 	}
 
     void Renderer::CreateFrameContexts()
@@ -472,8 +427,6 @@ namespace engine::render
 
 			if (this->timestampQuerySupported_)
 			{
-				// 每个 FrameContext 一个 QueryPool，存放一帧内所有 timestamp
-				// [0]=FrameStart [1]=Pass0 Start [2]=Pass0 End [3]=Pass1 End ...
 				VkQueryPoolCreateInfo queryPoolCI{};
 				queryPoolCI.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
 				queryPoolCI.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -483,10 +436,6 @@ namespace engine::render
 					"Failed to create query pool"
 				);
 				core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_QUERY_POOL, reinterpret_cast<uint64_t>(frameContexts_[i].queryPool_), ("FrameContext[" + std::to_string(i) + "]: QueryPool").c_str());
-
-				// 注意：不要用 vkResetQueryPool（Vulkan 1.2 才进入核心，本工程是 1.0）
-				// 每帧 BeginFrame 中的 vkCmdResetQueryPool（1.0 函数）已负责 reset
-				// 第一帧 vkGetQueryPoolResults 会返回 VK_NOT_READY，被成功检查静默跳过
 			}
 		}
     }
@@ -507,399 +456,186 @@ namespace engine::render
 		}
     }
     
-	void Renderer::CreateMainRenderPass()
-	{
-		LOG_INFO("Renderer: start to create main render pass...");
-		auto& device = core::Device::Instance();
-        // Initialization logic for PBRRenderPass
-        if (this->rendererDescription_.multiSampling_) 
-		{
-			std::array<VkAttachmentDescription, 4> attachments = {};
-
-			// Multisampled attachment that we render to
-			attachments[0].format = this->swapChain_.GetColorFormat();
-			attachments[0].samples = device.GetMultiSampleCount();
-			attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-			attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-			// This is the frame buffer attachment to where the multisampled image
-			// will be resolved to and which will be presented to the swapchain
-			attachments[1].format = this->swapChain_.GetColorFormat();
-			attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-			attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-			attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			attachments[1].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-			// Multisampled depth attachment we render to
-			attachments[2].format = this->swapChain_.GetDepthFormat();
-			attachments[2].samples = device.GetMultiSampleCount();
-			attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			attachments[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-			// Depth resolve attachment
-			attachments[3].format = this->swapChain_.GetDepthFormat();
-			attachments[3].samples = VK_SAMPLE_COUNT_1_BIT;
-			attachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-			attachments[3].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			attachments[3].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			attachments[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-			VkAttachmentReference colorReference = {};
-			colorReference.attachment = 0;
-			colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-			VkAttachmentReference depthReference = {};
-			depthReference.attachment = 2;
-			depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-			// Resolve attachment reference for the color attachment
-			VkAttachmentReference resolveReference = {};
-			resolveReference.attachment = 1;
-			resolveReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-			VkSubpassDescription subpass = {};
-			subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-			subpass.colorAttachmentCount = 1;
-			subpass.pColorAttachments = &colorReference;
-			// Pass our resolve attachments to the sub pass
-			subpass.pResolveAttachments = &resolveReference;
-			subpass.pDepthStencilAttachment = &depthReference;
-
-			std::array<VkSubpassDependency, 2> dependencies;
-
-			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-			dependencies[0].dstSubpass = 0;
-			dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-			dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-			dependencies[1].srcSubpass = 0;
-			dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-			dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-			dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-			VkRenderPassCreateInfo renderPassCI = {};
-			renderPassCI.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-			renderPassCI.attachmentCount = static_cast<uint32_t>(attachments.size());
-			renderPassCI.pAttachments = attachments.data();
-			renderPassCI.subpassCount = 1;
-			renderPassCI.pSubpasses = &subpass;
-			renderPassCI.dependencyCount = 2;
-			renderPassCI.pDependencies = dependencies.data();
-            SUCCESS_OR_LOG(
-                (vkCreateRenderPass(device.GetLogicalDeviceHandle(), &renderPassCI, nullptr, &this->mainRenderPass_) == VK_SUCCESS),
-                "Failed to create render pass"
-			);
-		}
-		else 
-		{
-			std::array<VkAttachmentDescription, 2> attachments = {};
-			// Color attachment
-			attachments[0].format = this->swapChain_.GetColorFormat();
-			attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-			attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-			attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-			attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-			// Depth attachment
-			attachments[1].format = this->swapChain_.GetDepthFormat();
-			attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-			attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-			attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-			VkAttachmentReference colorReference = {};
-			colorReference.attachment = 0;
-			colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-			VkAttachmentReference depthReference = {};
-			depthReference.attachment = 1;
-			depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-			VkSubpassDescription subpassDescription = {};
-			subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-			subpassDescription.colorAttachmentCount = 1;
-			subpassDescription.pColorAttachments = &colorReference;
-			subpassDescription.pDepthStencilAttachment = &depthReference;
-			subpassDescription.inputAttachmentCount = 0;
-			subpassDescription.pInputAttachments = nullptr;
-			subpassDescription.preserveAttachmentCount = 0;
-			subpassDescription.pPreserveAttachments = nullptr;
-			subpassDescription.pResolveAttachments = nullptr;
-
-			// Subpass dependencies for layout transitions
-			std::array<VkSubpassDependency, 2> dependencies;
-
-			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-			dependencies[0].dstSubpass = 0;
-			dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-			dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-			dependencies[1].srcSubpass = 0;
-			dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-			dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-			dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-			VkRenderPassCreateInfo renderPassCI{};
-			renderPassCI.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-			renderPassCI.attachmentCount = static_cast<uint32_t>(attachments.size());
-			renderPassCI.pAttachments = attachments.data();
-			renderPassCI.subpassCount = 1;
-			renderPassCI.pSubpasses = &subpassDescription;
-			renderPassCI.dependencyCount = static_cast<uint32_t>(dependencies.size());
-			renderPassCI.pDependencies = dependencies.data();
-            SUCCESS_OR_LOG(
-                vkCreateRenderPass(device.GetLogicalDeviceHandle(), &renderPassCI, nullptr, &mainRenderPass_) == VK_SUCCESS,
-                "Failed to create render pass"
-			);
-		}
-
-		device.SetObjectName(VK_OBJECT_TYPE_RENDER_PASS, reinterpret_cast<uint64_t>(this->mainRenderPass_), "Renderer Main Render Pass");		
-	}
-
-	void Renderer::CreateMainAttachments(MainRenderPassAttachmentList& attachmentList)
-	{
-		auto& device = core::Device::Instance();
-		const VkExtent2D extent = this->swapChain_.GetExtent();
-
-		if (this->rendererDescription_.multiSampling_)
-		{
-			VkImageCreateInfo imageCI{};
-			imageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-			imageCI.imageType = VK_IMAGE_TYPE_2D;
-			imageCI.format = this->swapChain_.GetColorFormat();
-			imageCI.extent = { extent.width, extent.height, 1 };
-			imageCI.mipLevels = 1;
-			imageCI.arrayLayers = 1;
-			imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-			imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-			imageCI.samples = device.GetMultiSampleCount();
-			imageCI.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-			imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-			SUCCESS_OR_LOG(
-				vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &attachmentList.multisampleColorAttachment_.image_) == VK_SUCCESS,
-				"Failed to create multisample color image"
-			);
-
-			VkMemoryRequirements memReqs{};
-			vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), attachmentList.multisampleColorAttachment_.image_, &memReqs);
-			VkMemoryAllocateInfo memAllocInfo{};
-			memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-			memAllocInfo.allocationSize = memReqs.size;
-			VkBool32 lazyMemTypePresent = VK_FALSE;
-			memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, &lazyMemTypePresent);
-			if (!lazyMemTypePresent)
-			{
-				memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-			}
-
-			SUCCESS_OR_LOG(
-				vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &attachmentList.multisampleColorAttachment_.memory_) == VK_SUCCESS,
-				"Failed to allocate multisample color image memory"
-			);
-
-			SUCCESS_OR_LOG(
-				vkBindImageMemory(device.GetLogicalDeviceHandle(), attachmentList.multisampleColorAttachment_.image_, attachmentList.multisampleColorAttachment_.memory_, 0) == VK_SUCCESS,
-				"Failed to bind multisample color image memory"
-			);
-
-			VkImageViewCreateInfo imageViewCI{};
-			imageViewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-			imageViewCI.image = attachmentList.multisampleColorAttachment_.image_;
-			imageViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
-			imageViewCI.format = this->swapChain_.GetColorFormat();
-			imageViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			imageViewCI.subresourceRange.levelCount = 1;
-			imageViewCI.subresourceRange.layerCount = 1;
-
-			SUCCESS_OR_LOG(
-				vkCreateImageView(device.GetLogicalDeviceHandle(), &imageViewCI, nullptr, &attachmentList.multisampleColorAttachment_.imageView_) == VK_SUCCESS,
-				"Failed to create multisample color image view"
-			);
-
-			imageCI.format = this->swapChain_.GetDepthFormat();
-			imageCI.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-
-			SUCCESS_OR_LOG(
-				vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &attachmentList.multisampleDepthAttachment_.image_) == VK_SUCCESS,
-				"Failed to create multisample depth image"
-			);
-
-			vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), attachmentList.multisampleDepthAttachment_.image_, &memReqs);
-			memAllocInfo.allocationSize = memReqs.size;
-			lazyMemTypePresent = VK_FALSE;
-			memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, &lazyMemTypePresent);
-			if (!lazyMemTypePresent)
-			{
-				memAllocInfo.memoryTypeIndex = device.GetMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-			}
-
-			SUCCESS_OR_LOG(
-				vkAllocateMemory(device.GetLogicalDeviceHandle(), &memAllocInfo, nullptr, &attachmentList.multisampleDepthAttachment_.memory_) == VK_SUCCESS,
-				"Failed to allocate multisample depth image memory"
-			);
-
-			SUCCESS_OR_LOG(
-				vkBindImageMemory(device.GetLogicalDeviceHandle(), attachmentList.multisampleDepthAttachment_.image_, attachmentList.multisampleDepthAttachment_.memory_, 0) == VK_SUCCESS,
-				"Failed to bind multisample depth image memory"
-			);
-
-			imageViewCI.image = attachmentList.multisampleDepthAttachment_.image_;
-			imageViewCI.format = this->swapChain_.GetDepthFormat();
-			imageViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-
-			SUCCESS_OR_LOG(
-				vkCreateImageView(device.GetLogicalDeviceHandle(), &imageViewCI, nullptr, &attachmentList.multisampleDepthAttachment_.imageView_) == VK_SUCCESS,
-				"Failed to create multisample depth image view"
-			);
-		}
-
-		VkImageCreateInfo depthImageCI{};
-		depthImageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		depthImageCI.imageType = VK_IMAGE_TYPE_2D;
-		depthImageCI.format = this->swapChain_.GetDepthFormat();
-		depthImageCI.extent = { extent.width, extent.height, 1 };
-		depthImageCI.mipLevels = 1;
-		depthImageCI.arrayLayers = 1;
-		depthImageCI.samples = VK_SAMPLE_COUNT_1_BIT;
-		depthImageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-		depthImageCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-
-		SUCCESS_OR_LOG(
-			vkCreateImage(device.GetLogicalDeviceHandle(), &depthImageCI, nullptr, &attachmentList.depthAttachment_.image_) == VK_SUCCESS,
-			"Failed to create depth stencil image"
-		);
-
-		VkMemoryRequirements depthMemReqs{};
-		vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), attachmentList.depthAttachment_.image_, &depthMemReqs);
-		VkMemoryAllocateInfo depthMemAlloc{};
-		depthMemAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		depthMemAlloc.allocationSize = depthMemReqs.size;
-		depthMemAlloc.memoryTypeIndex = device.GetMemoryType(depthMemReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		SUCCESS_OR_LOG(
-			vkAllocateMemory(device.GetLogicalDeviceHandle(), &depthMemAlloc, nullptr, &attachmentList.depthAttachment_.memory_) == VK_SUCCESS,
-			"Failed to allocate depth stencil image memory"
-		);
-
-		SUCCESS_OR_LOG(
-			vkBindImageMemory(device.GetLogicalDeviceHandle(), attachmentList.depthAttachment_.image_, attachmentList.depthAttachment_.memory_, 0) == VK_SUCCESS,
-			"Failed to bind depth stencil image memory"
-		);
-
-		VkImageViewCreateInfo depthViewCI{};
-		depthViewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		depthViewCI.image = attachmentList.depthAttachment_.image_;
-		depthViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		depthViewCI.format = this->swapChain_.GetDepthFormat();
-		depthViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-		depthViewCI.subresourceRange.levelCount = 1;
-		depthViewCI.subresourceRange.layerCount = 1;
-
-		SUCCESS_OR_LOG(
-			vkCreateImageView(device.GetLogicalDeviceHandle(), &depthViewCI, nullptr, &attachmentList.depthAttachment_.imageView_) == VK_SUCCESS,
-			"Failed to create depth stencil image view"
-		);
-
-	}
-
-	void Renderer::CreatMainFrameBuffer()
-	{
-		LOG_INFO("Renderer: start to create main frame buffer...");
-		auto& device = core::Device::Instance();
-		const uint32_t imageCount = this->swapChain_.GetImageCount();
-		const VkExtent2D extent = this->swapChain_.GetExtent();
-
-		this->mainAttachmentLists_.resize(imageCount);
-		this->frameBuffers_.resize(imageCount, VK_NULL_HANDLE);
-
-		for (uint32_t i = 0; i < imageCount; ++i)
-		{
-			auto& attachmentList = this->mainAttachmentLists_[i];
-			this->CreateMainAttachments(attachmentList);
-
-			VkImageView attachments[4]{};
-			if (this->rendererDescription_.multiSampling_)
-			{
-				attachments[0] = attachmentList.multisampleColorAttachment_.imageView_;
-				attachments[1] = this->swapChain_.GetSwapChainBuffer(i).view;
-				attachments[2] = attachmentList.multisampleDepthAttachment_.imageView_;
-				attachments[3] = attachmentList.depthAttachment_.imageView_;
-			}
-			else
-			{
-				attachments[0] = this->swapChain_.GetSwapChainBuffer(i).view;
-				attachments[1] = attachmentList.depthAttachment_.imageView_;
-			}
-
-			VkFramebufferCreateInfo frameBufferCI{};
-			frameBufferCI.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-			frameBufferCI.renderPass = this->mainRenderPass_;
-			frameBufferCI.attachmentCount = this->rendererDescription_.multiSampling_ ? 4 : 2;
-			frameBufferCI.pAttachments = attachments;
-			frameBufferCI.width = extent.width;
-			frameBufferCI.height = extent.height;
-			frameBufferCI.layers = 1;
-
-			SUCCESS_OR_LOG(
-				vkCreateFramebuffer(device.GetLogicalDeviceHandle(), &frameBufferCI, nullptr, &this->frameBuffers_[i]) == VK_SUCCESS,
-				"Failed to create framebuffer"
-			);
-			core::Device::Instance().SetObjectName(VK_OBJECT_TYPE_FRAMEBUFFER, reinterpret_cast<uint64_t>(this->frameBuffers_[i]), ("Renderer Framebuffer[" + std::to_string(i) + "]").c_str());
-		}
-	}
-
-    void Renderer::DestroyMainFrameBuffer()
+    void Renderer::CreateImage(const RenderResourceDescription& resource, VkImageUsageFlags usage)
     {
         auto& device = core::Device::Instance();
-        for (auto& fb : this->frameBuffers_) 
-		{
-            if (fb != VK_NULL_HANDLE) 
-			{
-                vkDestroyFramebuffer(device.GetLogicalDeviceHandle(), fb, nullptr);
-                fb = VK_NULL_HANDLE;
+        const auto& description = std::get<RenderImageDescription>(resource.description_);
+        const VkExtent2D extent = this->swapChain_.GetExtent();
+
+        VkImageCreateInfo imageCI{};
+        imageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageCI.imageType = VK_IMAGE_TYPE_2D;
+        imageCI.flags = description.viewType_ == VK_IMAGE_VIEW_TYPE_CUBE ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+        imageCI.format = description.format_;
+        imageCI.extent = {extent.width, extent.height, 1};
+        imageCI.mipLevels = description.mipLevels_;
+        imageCI.arrayLayers = description.arrayLayers_;
+        imageCI.samples = description.samples_;
+        imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageCI.usage = usage;
+        imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        // aspect 属于图像格式；深度图即使只用于采样，也不能创建 color view。
+        VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        switch (imageCI.format)
+        {
+            case VK_FORMAT_D16_UNORM:
+            case VK_FORMAT_X8_D24_UNORM_PACK32:
+            case VK_FORMAT_D32_SFLOAT:
+                aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+                break;
+            case VK_FORMAT_D16_UNORM_S8_UINT:
+            case VK_FORMAT_D24_UNORM_S8_UINT:
+            case VK_FORMAT_D32_SFLOAT_S8_UINT:
+                aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+                break;
+            case VK_FORMAT_S8_UINT:
+                aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+                break;
+            default:
+                break;
+        }
+
+        auto& images = this->renderResources_.GetOrCreateImages(resource.id_);
+        const uint32_t instanceCount = description.instancePolicy_ == RenderImageInstancePolicy::PerSwapchainImage
+            ? this->swapChain_.GetImageCount() : 1;
+        images.resize(instanceCount);
+        for (uint32_t i = 0; i < images.size(); ++i)
+        {
+            auto& image = images[i];
+            SUCCESS_OR_LOG(
+                vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &image.image_) == VK_SUCCESS,
+                "Failed to create render image"
+            );
+
+            VkMemoryRequirements memoryRequirements{};
+            vkGetImageMemoryRequirements(device.GetLogicalDeviceHandle(), image.image_, &memoryRequirements);
+            VkMemoryAllocateInfo memoryInfo{};
+            memoryInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            memoryInfo.allocationSize = memoryRequirements.size;
+            memoryInfo.memoryTypeIndex = device.GetMemoryType(
+                memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            );
+            SUCCESS_OR_LOG(
+                vkAllocateMemory(device.GetLogicalDeviceHandle(), &memoryInfo, nullptr, &image.memory_) == VK_SUCCESS,
+                "Failed to allocate render image memory"
+            );
+
+            SUCCESS_OR_LOG(
+                vkBindImageMemory(device.GetLogicalDeviceHandle(), image.image_, image.memory_, 0) == VK_SUCCESS,
+                "Failed to bind render image memory"
+            );
+
+            VkImageViewCreateInfo viewCI{};
+            viewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewCI.image = image.image_;
+            viewCI.viewType = description.viewType_;
+            viewCI.format = imageCI.format;
+            viewCI.subresourceRange = {aspect, 0, imageCI.mipLevels, 0, imageCI.arrayLayers};
+            SUCCESS_OR_LOG(
+                vkCreateImageView(device.GetLogicalDeviceHandle(), &viewCI, nullptr, &image.imageView_) == VK_SUCCESS,
+                "Failed to create render image view"
+            );
+
+            const std::string name = std::string(resource.name_) + "[" + std::to_string(i) + "]";
+            device.SetObjectName(VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(image.image_), name.c_str());
+            device.SetObjectName(VK_OBJECT_TYPE_IMAGE_VIEW, reinterpret_cast<uint64_t>(image.imageView_), (name + " View").c_str());
+        }
+        LOG_INFO("Renderer: created " << resource.name_ << " images, instances=" << images.size()
+            << ", samples=" << imageCI.samples);
+    }
+
+    void Renderer::PrepareUI()
+    {
+        auto& device = core::Device::Instance();
+
+        VkAttachmentDescription attachment{};
+        attachment.format = this->swapChain_.GetColorFormat();
+        attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        const VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorReference;
+
+        VkSubpassDependency dependency{};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+        VkRenderPassCreateInfo renderPassCI{};
+        renderPassCI.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassCI.attachmentCount = 1;
+        renderPassCI.pAttachments = &attachment;
+        renderPassCI.subpassCount = 1;
+        renderPassCI.pSubpasses = &subpass;
+        renderPassCI.dependencyCount = 1;
+        renderPassCI.pDependencies = &dependency;
+
+        SUCCESS_OR_LOG(
+            vkCreateRenderPass(device.GetLogicalDeviceHandle(), &renderPassCI, nullptr, &this->uiRenderPass_) == VK_SUCCESS,
+            "Renderer: failed to create UI render pass."
+        );
+        device.SetObjectName(
+            VK_OBJECT_TYPE_RENDER_PASS, reinterpret_cast<uint64_t>(this->uiRenderPass_), "UI RenderPass"
+        );
+
+        this->CreateUIFramebuffers();
+    }
+
+    void Renderer::CreateUIFramebuffers()
+    {
+        auto& device = core::Device::Instance();
+        const VkExtent2D extent = this->swapChain_.GetExtent();
+        this->uiFramebuffers_.resize(this->swapChain_.GetImageCount(), VK_NULL_HANDLE);
+
+        for (uint32_t i = 0; i < this->uiFramebuffers_.size(); ++i)
+        {
+            VkImageView view = this->swapChain_.GetSwapChainBuffer(i).view;
+
+            VkFramebufferCreateInfo framebufferCI{};
+            framebufferCI.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferCI.renderPass = this->uiRenderPass_;
+            framebufferCI.attachmentCount = 1;
+            framebufferCI.pAttachments = &view;
+            framebufferCI.width = extent.width;
+            framebufferCI.height = extent.height;
+            framebufferCI.layers = 1;
+
+            SUCCESS_OR_LOG(
+                vkCreateFramebuffer(device.GetLogicalDeviceHandle(), &framebufferCI, nullptr, &this->uiFramebuffers_[i]) == VK_SUCCESS,
+                "Renderer: failed to create UI framebuffer."
+            );
+            const std::string name = "UI Framebuffer[" + std::to_string(i) + "]";
+            device.SetObjectName(
+                VK_OBJECT_TYPE_FRAMEBUFFER, reinterpret_cast<uint64_t>(this->uiFramebuffers_[i]), name.c_str()
+            );
+        }
+    }
+
+    void Renderer::DestroyUIFramebuffers()
+    {
+        for (auto& framebuffer : this->uiFramebuffers_)
+        {
+            if (framebuffer != VK_NULL_HANDLE)
+            {
+                vkDestroyFramebuffer(core::Device::Instance().GetLogicalDeviceHandle(), framebuffer, nullptr);
+                framebuffer = VK_NULL_HANDLE;
             }
         }
-        this->frameBuffers_.clear();
-
-        for (auto& attachmentList : this->mainAttachmentLists_)
-        {
-            attachmentList.multisampleColorAttachment_.Destroy();
-            attachmentList.multisampleDepthAttachment_.Destroy();
-            attachmentList.depthAttachment_.Destroy();
-            attachmentList.colorAttachment_.Destroy();
-        }
-        this->mainAttachmentLists_.clear();
+        this->uiFramebuffers_.clear();
     }
 
     void Renderer::RecreateSyncObjects()
@@ -945,7 +681,14 @@ namespace engine::render
         auto& device = core::Device::Instance();
         vkDeviceWaitIdle(device.GetLogicalDeviceHandle());
 
-        this->DestroyMainFrameBuffer();
+        this->DestroyUIFramebuffers();
+        const FrameGraphExecutionPlan& executionPlan = this->renderContext_->GetFrameGraph().GetExecutionPlan();
+        for (const CompiledPass& compiledPass : executionPlan.passes_)
+        {
+            RenderPass* renderPass = this->renderContext_->GetFrameGraph().GetNode(compiledPass.nodeId_).renderPass_;
+            renderPass->DestroyFramebuffers();
+        }
+        this->renderResources_.ClearImages();
 
         // Recreate swapchain (internally destroys old swapchain + image views)
         this->swapChain_.CreateSwapChain(&width, &height, this->rendererDescription_.vsync_);
@@ -953,8 +696,13 @@ namespace engine::render
         // Image count may have changed -> recreate semaphores sized by image count
         this->RecreateSyncObjects();
 
-        // Rebuild MSAA/depth attachments + framebuffers with the new extent
-        this->CreatMainFrameBuffer();
+        this->CreateResources();
+        for (const CompiledPass& compiledPass : executionPlan.passes_)
+        {
+            RenderPass* renderPass = this->renderContext_->GetFrameGraph().GetNode(compiledPass.nodeId_).renderPass_;
+            renderPass->RecreateFramebuffers(this->renderResources_, this->swapChain_);
+        }
+        this->CreateUIFramebuffers();
 
         this->imageIndex_ = 0;
         this->currentCB_ = VK_NULL_HANDLE;
@@ -964,7 +712,6 @@ namespace engine::render
 	bool Renderer::BeginFrame(uint32_t windowWidth, uint32_t windowHeight)
 	{
 		auto& device = core::Device::Instance();
-		bool multiSampling = this->rendererDescription_.multiSampling_;
 
 		if (windowWidth == 0 || windowHeight == 0)
 		{
@@ -1018,7 +765,8 @@ namespace engine::render
 		if (this->timestampQuerySupported_ && frameContext.hasSubmittedFrame_)
 		{
 			// 只读取实际写入的 query（FrameStart 1 个 + 每个 Pass 2 个），不要读取预留但未写入的槽位
-			const uint32_t queryCountToRead = std::min<uint32_t>(kGpuQueryCount, 1 + static_cast<uint32_t>(this->renderPasses_.size()) * 2);
+			const auto passCount = this->renderContext_->GetFrameGraph().GetExecutionPlan().passes_.size();
+			const uint32_t queryCountToRead = std::min<uint32_t>(kGpuQueryCount, 1 + static_cast<uint32_t>(passCount) * 2);
 			uint64_t timestamps[kGpuQueryCount] = {};
 			VkResult queryResult = vkGetQueryPoolResults(
 				device.GetLogicalDeviceHandle(),
@@ -1072,29 +820,6 @@ namespace engine::render
 		VkCommandBufferBeginInfo cmdBufferBeginInfo{};
 		cmdBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-		VkClearValue clearValues[3];
-		if (multiSampling) {
-			clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
-			clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
-			clearValues[2].depthStencil = { 1.0f, 0 };
-		}
-		else 
-		{
-			clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
-			clearValues[1].depthStencil = { 1.0f, 0 };
-		}
-
-		VkRenderPassBeginInfo renderPassBeginInfo{};
-		renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-		renderPassBeginInfo.renderPass = this->mainRenderPass_;
-		renderPassBeginInfo.renderArea.offset.x = 0;
-		renderPassBeginInfo.renderArea.offset.y = 0;
-		renderPassBeginInfo.renderArea.extent.width = extent.width;
-		renderPassBeginInfo.renderArea.extent.height = extent.height;
-		renderPassBeginInfo.clearValueCount = multiSampling ? 3 : 2;
-		renderPassBeginInfo.pClearValues = clearValues;
-		renderPassBeginInfo.framebuffer = this->frameBuffers_[this->imageIndex_];
-
 		this->currentCB_ = frameContext.commandBuffer_;
 
 		vkBeginCommandBuffer(this->currentCB_, &cmdBufferBeginInfo);
@@ -1119,8 +844,6 @@ namespace engine::render
 			beginLabel(this->currentCB_, &labelInfo);
 		}
 
-		vkCmdBeginRenderPass(this->currentCB_, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-
 		// 记录帧起点（vkCmdWriteTimestamp 允许在 render pass 内部使用）
 		if (this->timestampQuerySupported_)
 		{
@@ -1143,42 +866,92 @@ namespace engine::render
 
 	void Renderer::Render()
 	{
+		if (this->renderContext_ == nullptr)
+		{
+			LOG_ERROR("Renderer: PrepareFrame must provide a RenderContext before rendering.");
+			return;
+		}
+
 		auto& frameContext = this->frameContexts_[this->frameIndex_];
 		uint32_t queryIndex = 1;
 
 		// 每帧使用当前 frame slot 的 RenderScene（由 SetRenderScene 从组合层填充）
 		const RenderScene& renderScene = this->renderScenes_[this->frameIndex_];
 
-		if (this->frameGraph_.NeedsRebuild())
+		const FrameGraph& frameGraph = this->renderContext_->GetFrameGraph();
+		if (frameGraph.NeedsRebuild())
 		{
 			LOG_ERROR("Renderer: FrameGraph must be rebuilt before rendering.");
 			return;
 		}
 
-		const FrameGraphExecutionPlan& executionPlan = this->frameGraph_.GetExecutionPlan();
+		const FrameGraphExecutionPlan& executionPlan = frameGraph.GetExecutionPlan();
 		if (!executionPlan.valid_)
 		{
 			LOG_ERROR("Renderer: FrameGraph execution plan is invalid.");
 			return;
 		}
 
-		for (FrameGraphNodeId nodeId : executionPlan.nodeIds_)
+		for (const CompiledPass& compiledPass : executionPlan.passes_)
 		{
-			const FrameGraphPassNode& node = this->frameGraph_.GetNode(nodeId);
-			if (node.renderPassIndex_ >= this->renderPasses_.size())
+			const FrameGraphPassNode& node = frameGraph.GetNode(compiledPass.nodeId_);
+			RenderPass* renderPass = node.renderPass_;
+			if (renderPass == nullptr)
 			{
 				LOG_ERROR("Renderer: FrameGraph node contains an invalid RenderPassIndex.");
 				return;
 			}
 
-			RenderPass& renderPass = *this->renderPasses_[node.renderPassIndex_];
+			for (const CompiledResourceBarrier& compiledBarrier : compiledPass.barriersBefore_)
+			{
+				const auto& images = this->renderResources_.GetImages(compiledBarrier.resourceId_);
+				const uint32_t resourceImageIndex = images.size() == 1 ? 0 : this->imageIndex_;
+
+				VkImageMemoryBarrier imageBarrier{};
+				imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				imageBarrier.srcAccessMask = GetAccessMask(compiledBarrier.srcUsage_, true);
+				imageBarrier.dstAccessMask = GetAccessMask(compiledBarrier.dstUsage_, false);
+				imageBarrier.oldLayout = compiledBarrier.srcUsage_.requiredLayout_;
+				imageBarrier.newLayout = compiledBarrier.dstUsage_.requiredLayout_;
+				imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				imageBarrier.image = images[resourceImageIndex].image_;
+				imageBarrier.subresourceRange.aspectMask =
+					compiledBarrier.dstUsage_.type_ == ResourceUsage::DepthAttachment
+					? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+				imageBarrier.subresourceRange.baseMipLevel = 0;
+				imageBarrier.subresourceRange.levelCount = 1;
+				imageBarrier.subresourceRange.baseArrayLayer = 0;
+				imageBarrier.subresourceRange.layerCount = 1;
+
+				vkCmdPipelineBarrier(
+					this->currentCB_,
+					GetPipelineStage(compiledBarrier.srcUsage_),
+					GetPipelineStage(compiledBarrier.dstUsage_),
+					0,
+					0, nullptr,
+					0, nullptr,
+					1, &imageBarrier
+				);
+			}
 
 			if (this->timestampQuerySupported_)
 			{
 				vkCmdWriteTimestamp(this->currentCB_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frameContext.queryPool_, queryIndex);
 			}
 
-			renderPass.Execute(currentCB_, this->frameIndex_, renderScene);
+			const std::span<const VkClearValue> clearValues = renderPass->GetClearValues();
+			VkRenderPassBeginInfo renderPassBeginInfo{};
+			renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+			renderPassBeginInfo.renderPass = renderPass->GetHandle();
+			renderPassBeginInfo.framebuffer = renderPass->GetFramebuffer(this->imageIndex_);
+			renderPassBeginInfo.renderArea.extent = this->swapChain_.GetExtent();
+			renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+			renderPassBeginInfo.pClearValues = clearValues.data();
+
+			vkCmdBeginRenderPass(this->currentCB_, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+			renderPass->Execute(currentCB_, this->frameIndex_, this->imageIndex_, renderScene);
+			vkCmdEndRenderPass(this->currentCB_);
 
 			if (this->timestampQuerySupported_)
 			{
@@ -1199,7 +972,7 @@ namespace engine::render
 		matrices.model = rs.modelMatrix;
 		matrices.view = rs.camera.view;
 		matrices.camPos = rs.camera.position;
-		memcpy(this->matricesUBOBuffers_[this->frameIndex_].mapped, &matrices, sizeof(matrices));
+		memcpy(this->renderResources_.GetBuffers(RenderResourceId::MainCamera)[this->frameIndex_].mapped, &matrices, sizeof(matrices));
 
 		// 组装并上传 shader set=0 binding=1（UBOParams）
 		ParamsUpload params;
@@ -1211,7 +984,7 @@ namespace engine::render
 		params.debugViewInputs = rs.settings.debugViewInputs;
 		params.debugViewEquation = rs.settings.debugViewEquation;
 		params.debugBsdfType = rs.settings.debugBsdfType;
-		memcpy(this->paramsUBOBuffers_[this->frameIndex_].mapped, &params, sizeof(params));
+		memcpy(this->renderResources_.GetBuffers(RenderResourceId::SceneParam)[this->frameIndex_].mapped, &params, sizeof(params));
 	}
 
 	void Renderer::EndFrame()
@@ -1224,8 +997,6 @@ namespace engine::render
 		{
 			endLabel(this->currentCB_);
 		}
-
-		vkCmdEndRenderPass(this->currentCB_);
 
 		SUCCESS_OR_LOG(
 			vkEndCommandBuffer(this->currentCB_) == VK_SUCCESS,
@@ -1271,19 +1042,35 @@ namespace engine::render
 		this->frameIndex_ = (this->frameIndex_ + 1) % this->frameCount_;
 	}
 	
-	VkRenderPass Renderer::GetRenderPass()
-	{
-		return this->mainRenderPass_;
-	}
-
 	VkPipelineCache Renderer::GetPipelineCache()
 	{
-		return this->pipelineCache_;
+		return PipelineCache::Instance().GetHandle();
 	}
 
 	VkCommandBuffer Renderer::GetCurrentCommandBuffer()
 	{
 		return this->currentCB_;
+	}
+
+	VkRenderPass Renderer::GetUIRenderPass() const
+	{
+		return this->uiRenderPass_;
+	}
+
+	void Renderer::BeginUIRenderPass()
+	{
+		VkRenderPassBeginInfo renderPassBeginInfo{};
+		renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassBeginInfo.renderPass = this->uiRenderPass_;
+		renderPassBeginInfo.framebuffer = this->uiFramebuffers_[this->imageIndex_];
+		renderPassBeginInfo.renderArea.extent = this->swapChain_.GetExtent();
+
+		vkCmdBeginRenderPass(this->currentCB_, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	}
+
+	void Renderer::EndUIRenderPass()
+	{
+		vkCmdEndRenderPass(this->currentCB_);
 	}
 
     GpuTimings Renderer::GetGpuTimings()
@@ -1302,12 +1089,23 @@ namespace engine::render
 
         vkDeviceWaitIdle(device.GetLogicalDeviceHandle());
 
-        if (this->pipelineCache_ != VK_NULL_HANDLE)
-		{
-			this->SavePipelineCache();
-			vkDestroyPipelineCache(device.GetLogicalDeviceHandle(), this->pipelineCache_, nullptr);
-            this->pipelineCache_ = VK_NULL_HANDLE;
+        // framebuffer 引用图像 view，必须在 RenderResourceRegistry 和 Swapchain view 之前销毁。
+        this->DestroyUIFramebuffers();
+        if (this->renderContext_ != nullptr)
+        {
+            const FrameGraph& frameGraph = this->renderContext_->GetFrameGraph();
+            for (const CompiledPass& compiledPass : frameGraph.GetExecutionPlan().passes_)
+            {
+                RenderPass* renderPass = frameGraph.GetNode(compiledPass.nodeId_).renderPass_;
+                renderPass->DestroyRenderTarget();
+            }
         }
+        if (this->uiRenderPass_ != VK_NULL_HANDLE)
+        {
+            vkDestroyRenderPass(device.GetLogicalDeviceHandle(), this->uiRenderPass_, nullptr);
+            this->uiRenderPass_ = VK_NULL_HANDLE;
+        }
+		PipelineCache::Instance().Destroy();
 
         for (auto& sem : this->renderFinishedSemaphores_) 
 		{
@@ -1319,7 +1117,8 @@ namespace engine::render
 
 		this->DestroyFrameContexts();
 
-		this->DestroyUniformBuffers();
+		this->renderResources_.ClearBuffers();
+		this->renderScenes_.clear();
 
         if (this->commandPool_ != VK_NULL_HANDLE) 
 		{
@@ -1327,28 +1126,7 @@ namespace engine::render
             this->commandPool_ = VK_NULL_HANDLE;
         }
 
-		for (auto& frameBuffer : this->frameBuffers_)
-		{
-			if (frameBuffer != VK_NULL_HANDLE)
-				vkDestroyFramebuffer(device.GetLogicalDeviceHandle(), frameBuffer, nullptr);
-		}
-		this->frameBuffers_.clear();
-
-		if (this->mainRenderPass_ != VK_NULL_HANDLE)
-		{
-			vkDestroyRenderPass(device.GetLogicalDeviceHandle(), this->mainRenderPass_, nullptr);
-			this->mainRenderPass_ = VK_NULL_HANDLE;
-		}
-
-		for (auto& attachmentList : this->mainAttachmentLists_)
-		{
-			attachmentList.multisampleColorAttachment_.Destroy();
-			attachmentList.multisampleDepthAttachment_.Destroy();
-			attachmentList.depthAttachment_.Destroy();
-			attachmentList.colorAttachment_.Destroy();
-		}
-
-		this->mainAttachmentLists_.clear();
+		this->renderResources_.ClearImages();
 		this->renderFinishedSemaphores_.clear();
 		this->currentCB_ = VK_NULL_HANDLE;
 

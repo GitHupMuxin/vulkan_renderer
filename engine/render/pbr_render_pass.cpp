@@ -1,5 +1,3 @@
-#include "engine/render/render_pass.h"
-
 #include <array>
 
 #include "engine/core/descriptor_allocator.h"
@@ -7,7 +5,11 @@
 #include "engine/core/device.h"
 #include "engine/core/loader.h"
 #include "engine/core/schema.h"
+#include "engine/core/swapchain.h"
+#include "engine/render/render_pass.h"
+#include "engine/render/frame_graph.h"
 #include "engine/render/fullscreen_pass.h"
+#include "engine/render/pipeline_cache_file.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/utils/log.h"
 
@@ -42,7 +44,7 @@ namespace engine::render
 	resource::Texture2D PBRRenderPass::PreComputeTexture(const FullScreenPassConfig& config)
     {
         FullScreenPass pass;
-        return pass.Execute(*(this->initInfo_.pipelineCache_), config);
+        return pass.Execute(PipelineCache::Instance().GetHandle(), config);
 	}
 
 
@@ -66,14 +68,14 @@ namespace engine::render
 				writeDescriptorSets[0].descriptorCount = 1;
 				writeDescriptorSets[0].dstSet = this->sceneSets_[i];
 				writeDescriptorSets[0].dstBinding = 0;
-				writeDescriptorSets[0].pBufferInfo = &(*this->initInfo_.matricesUBOBuffers_)[i].descriptor;
+				writeDescriptorSets[0].pBufferInfo = &this->renderResources_->GetBuffers(RenderResourceId::MainCamera)[i].descriptor;
 
 				writeDescriptorSets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 				writeDescriptorSets[1].descriptorCount = 1;
 				writeDescriptorSets[1].dstSet = this->sceneSets_[i];
 				writeDescriptorSets[1].dstBinding = 1;
-				writeDescriptorSets[1].pBufferInfo = &(*this->initInfo_.paramsUBOBuffers_)[i].descriptor;
+				writeDescriptorSets[1].pBufferInfo = &this->renderResources_->GetBuffers(RenderResourceId::SceneParam)[i].descriptor;
 
 				writeDescriptorSets[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				writeDescriptorSets[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -290,9 +292,7 @@ namespace engine::render
 		VkDescriptorSetLayout materialBufferLayout = core::DescriptorLayoutRegistry::Instance().GetOrCreate(schema::kMaterialSSBO);
 		VkDescriptorSetLayout meshDataLayout = core::DescriptorLayoutRegistry::Instance().GetOrCreate(schema::kMeshDataSSBO);
 
-		VkPipelineCache& pipelineCache = *(this->initInfo_.pipelineCache_);
-		VkRenderPass& mainRenderPass = *(this->initInfo_.mainRenderPass_);
-
+		VkPipelineCache pipelineCache = PipelineCache::Instance().GetHandle();
 		VkPipelineInputAssemblyStateCreateInfo inputAssemblyStateCI{};
 		inputAssemblyStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 		inputAssemblyStateCI.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -387,7 +387,7 @@ namespace engine::render
 		VkGraphicsPipelineCreateInfo pipelineCI{};
 		pipelineCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 		pipelineCI.layout = this->pipelineLayout_;
-		pipelineCI.renderPass = mainRenderPass;
+		pipelineCI.renderPass = this->renderPass_;
 		pipelineCI.pInputAssemblyState = &inputAssemblyStateCI;
 		pipelineCI.pVertexInputState = &vertexInputStateCI;
 		pipelineCI.pRasterizationState = &rasterizationStateCI;
@@ -452,80 +452,75 @@ namespace engine::render
         return "PBRRenderPass";
     }
 
-    std::span<const PassResourceUsage> PBRRenderPass::GetResourceUsages() const noexcept
+    std::span<const PassInputResource> PBRRenderPass::GetInputResources() const noexcept
     {
-        static constexpr std::array usages = {
-            PassResourceUsage{
-                RenderResourceId::MainColor,
-                ResourceAccess::ReadWrite,
-                ResourceUsage::ColorAttachment,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        static constexpr std::array inputs = {
+            PassInputResource{RenderResourceId::MainCamera, {ResourceUsage::UniformBuffer}},
+            PassInputResource{RenderResourceId::SceneParam, {ResourceUsage::UniformBuffer}},
+            PassInputResource{RenderResourceId::IrradianceMap, {ResourceUsage::SampledImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}},
+            PassInputResource{RenderResourceId::PrefilteredMap, {ResourceUsage::SampledImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}},
+            PassInputResource{RenderResourceId::BrdfLut, {ResourceUsage::SampledImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}},
+            PassInputResource{RenderResourceId::EuLut, {ResourceUsage::SampledImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}},
+            PassInputResource{RenderResourceId::EavgLut, {ResourceUsage::SampledImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}},
+            PassInputResource{RenderResourceId::MaterialTextures, {ResourceUsage::SampledImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}},
+            PassInputResource{RenderResourceId::MaterialBuffer, {ResourceUsage::StorageBuffer}},
+            PassInputResource{RenderResourceId::MeshDataBuffer, {ResourceUsage::StorageBuffer}}
+        };
+
+        return inputs;
+    }
+
+    std::span<const PassOutputResource> PBRRenderPass::GetOutputResources() const noexcept
+    {
+        static constexpr std::array outputs = {
+            PassOutputResource{
+                RenderResourceId::SceneColorHdr,
+                PassColorAttachment{
+                    .loadOp_ = VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .storeOp_ = VK_ATTACHMENT_STORE_OP_STORE,
+                    .initialLayout_ = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    .finalLayout_ = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                }
             },
-            PassResourceUsage{
+            PassOutputResource{
                 RenderResourceId::MainDepth,
-                ResourceAccess::ReadWrite,
-                ResourceUsage::DepthAttachment,
-                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-            },
-            PassResourceUsage{
-                RenderResourceId::CameraMatrices,
-                ResourceAccess::Read,
-                ResourceUsage::UniformBuffer
-            },
-            PassResourceUsage{
-                RenderResourceId::RenderParams,
-                ResourceAccess::Read,
-                ResourceUsage::UniformBuffer
-            },
-            PassResourceUsage{
-                RenderResourceId::IrradianceMap,
-                ResourceAccess::Read,
-                ResourceUsage::SampledImage,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            },
-            PassResourceUsage{
-                RenderResourceId::PrefilteredMap,
-                ResourceAccess::Read,
-                ResourceUsage::SampledImage,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            },
-            PassResourceUsage{
-                RenderResourceId::BrdfLut,
-                ResourceAccess::Read,
-                ResourceUsage::SampledImage,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            },
-            PassResourceUsage{
-                RenderResourceId::EuLut,
-                ResourceAccess::Read,
-                ResourceUsage::SampledImage,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            },
-            PassResourceUsage{
-                RenderResourceId::EavgLut,
-                ResourceAccess::Read,
-                ResourceUsage::SampledImage,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            },
-            PassResourceUsage{
-                RenderResourceId::MaterialTextures,
-                ResourceAccess::Read,
-                ResourceUsage::SampledImage,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            },
-            PassResourceUsage{
-                RenderResourceId::MaterialBuffer,
-                ResourceAccess::Read,
-                ResourceUsage::StorageBuffer
-            },
-            PassResourceUsage{
-                RenderResourceId::MeshDataBuffer,
-                ResourceAccess::Read,
-                ResourceUsage::StorageBuffer
+                PassDepthAttachment{
+                    .loadOp_ = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    .storeOp_ = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                    .initialLayout_ = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .finalLayout_ = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    .clearValue_ = {1.0f, 0}
+                }
             }
         };
 
-        return usages;
+        return outputs;
+    }
+
+    PassResourceUsage  PBRRenderPass::GetResourceUsage(RenderResourceId resourceId) const noexcept
+    {
+		switch (resourceId)
+		{
+			case RenderResourceId::MainCamera:
+			case RenderResourceId::SceneParam:
+			case RenderResourceId::IrradianceMap:
+			case RenderResourceId::PrefilteredMap:
+			case RenderResourceId::BrdfLut:
+			case RenderResourceId::EuLut:
+			case RenderResourceId::EavgLut:
+			case RenderResourceId::MaterialTextures:
+				return {ResourceUsage::SampledImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+			case RenderResourceId::MaterialBuffer:
+				return {ResourceUsage::StorageBuffer};
+			case RenderResourceId::MeshDataBuffer:
+				return {ResourceUsage::StorageBuffer};
+			case RenderResourceId::SceneColorHdr:
+				return {ResourceUsage::ColorAttachment, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+			case RenderResourceId::MainDepth:
+				return {ResourceUsage::DepthAttachment, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+			default:
+				return {};
+		}
     }
 
     PBRRenderPass::PBRRenderPass()
@@ -564,7 +559,7 @@ namespace engine::render
 		this->SetUpPipeline(assetPath + "shaders/pbr.vert.spv", assetPath + "shaders/material_pbr.frag.spv");
 	}
 
-    void PBRRenderPass::Execute(VkCommandBuffer currentCB, uint32_t frameIndex, const RenderScene& renderScene)
+    void PBRRenderPass::Execute(VkCommandBuffer currentCB, uint32_t frameIndex, uint32_t, const RenderScene& renderScene)
     {
 		static auto beginLable = core::Device::Instance().GetCmdBeginDebugUtilsLabel();
 		static auto endLable = core::Device::Instance().GetCmdEndDebugUtilsLabel();

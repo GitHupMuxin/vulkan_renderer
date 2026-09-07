@@ -4,6 +4,7 @@
 #include "engine/core/keycodes.hpp"
 #include "engine/platform/window.h"
 #include "engine/render/renderer.h"
+#include "engine/render/render_context.h"
 #include "engine/scene/scene.h"
 #include "engine/scene/scene_extractor.h"
 #include "engine/resource/resource_manager.h"
@@ -16,6 +17,7 @@ namespace app
         private:
             std::vector<const char* >                   argv_;
             engine::platform::Window                    window_;
+            std::unique_ptr<engine::render::RenderContext> renderContext_;
             std::unique_ptr<engine::render::Renderer>   renderer_;
             engine::scene::Camera                       camera_;
             engine::scene::Scene                        scene_;
@@ -58,14 +60,11 @@ namespace app
             void                                        InitVulkan();
             void                                        SetUpWindow(HINSTANCE hInstance, WNDPROC wndproc);
             void                                        InitRenderer();
-            engine::render::FrameGraphNodeId            AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass);
-            void                                        AddRenderPassDependency(engine::render::FrameGraphNodeId sourceNodeId, engine::render::FrameGraphNodeId destinationNodeId, engine::render::RenderResourceId resourceId, engine::render::ResourceHazard hazard);
-            bool                                        RebuildFrameGraph();
             void                                        PrepareFrame();
             void                                        InitResourceManager();
             void                                        InitCamera();
             void                                        InitScene();
-            void                                        SetUpUI();
+            void                                        SetUpUI(VkRenderPass targetRenderPass);
             void                                        UpdateOverlay();
             void                                        RetCamera();
             void                                        RenderLoop();

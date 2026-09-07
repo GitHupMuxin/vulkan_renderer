@@ -1,14 +1,14 @@
-#include "engine/render/framebuffer_attachment.h"
+#include "engine/render/render_image.h"
 #include "engine/core/device.h"
 
 namespace engine::render
 {
-    Attachment::~Attachment()
+    RenderImage::~RenderImage()
     {
         this->Destroy();
     }
 
-    Attachment::Attachment(Attachment&& other) noexcept
+    RenderImage::RenderImage(RenderImage&& other) noexcept
         : image_(other.image_)
         , imageView_(other.imageView_)
         , memory_(other.memory_)
@@ -18,7 +18,7 @@ namespace engine::render
         other.memory_ = VK_NULL_HANDLE;
     }
 
-    Attachment& Attachment::operator=(Attachment&& other) noexcept
+    RenderImage& RenderImage::operator=(RenderImage&& other) noexcept
     {
         if (this != &other) {
             this->Destroy();
@@ -32,7 +32,7 @@ namespace engine::render
         return *this;
     }
 
-    void Attachment::Destroy()
+    void RenderImage::Destroy()
     {
         auto& device = core::Device::Instance();
         if (imageView_ != VK_NULL_HANDLE) {

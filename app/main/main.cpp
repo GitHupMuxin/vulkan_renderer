@@ -39,25 +39,10 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 	application->InitCamera();
 	application->InitScene();
 	application->InitRenderer();
-	// application->AddRenderPass(std::move(renderPass));
-	std::unique_ptr<engine::render::PBRRenderPass> pbrRenderPass_ = std::make_unique<engine::render::PBRRenderPass>();
-	std::unique_ptr<engine::render::SkyBoxRenderPass> skyboxRenderPass_ = std::make_unique<engine::render::SkyBoxRenderPass>();
-	LOG_INFO("Application: Adding skybox and PBR render passes...");
-	const engine::render::FrameGraphNodeId skyboxNodeId = application->AddRenderPass(std::move(skyboxRenderPass_));
-	const engine::render::FrameGraphNodeId pbrNodeId = application->AddRenderPass(std::move(pbrRenderPass_));
-
-	application->AddRenderPassDependency(
-		skyboxNodeId,
-		pbrNodeId,
-		engine::render::RenderResourceId::MainColor,
-		engine::render::ResourceHazard::ReadAfterWrite
-	);
 
 	application->PrepareFrame();
-
-	application->SetUpUI();
-
 	application->RenderLoop();
+
 	gApplication = nullptr;
 	application.reset();
 

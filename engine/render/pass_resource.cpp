@@ -1,5 +1,7 @@
 #include "engine/render/pass_resource.h"
 
+#include "engine/render/render_scene.h"
+
 #include <array>
 
 namespace engine::render
@@ -10,80 +12,187 @@ namespace engine::render
             RenderResourceDescription{
                 RenderResourceId::MainColor,
                 "MainColor",
-                RenderResourceType::Image,
-                RenderResourceLifetime::External
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::PerSwapchainImage
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::MainDepth,
                 "MainDepth",
-                RenderResourceType::Image,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::Persistent,
+                RenderImageDescription{
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::PerSwapchainImage
+                }
             },
             RenderResourceDescription{
-                RenderResourceId::CameraMatrices,
-                "CameraMatrices",
-                RenderResourceType::Buffer,
-                RenderResourceLifetime::Frame
+                RenderResourceId::MainCamera,
+                "MainCamera",
+                RenderResourceLifetime::Frame,
+                RenderBufferDescription{
+                    .size_ = sizeof(UBOMatricesUpload)
+                }
             },
             RenderResourceDescription{
-                RenderResourceId::RenderParams,
-                "RenderParams",
-                RenderResourceType::Buffer,
-                RenderResourceLifetime::Frame
+                RenderResourceId::SceneParam,
+                "SceneParam",
+                RenderResourceLifetime::Frame,
+                RenderBufferDescription{
+                    .size_ = sizeof(ParamsUpload)
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::EnvironmentCube,
                 "EnvironmentCube",
-                RenderResourceType::Image,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .format_ = VK_FORMAT_R16G16B16A16_SFLOAT,
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .arrayLayers_ = 6,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_CUBE,
+                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::IrradianceMap,
                 "IrradianceMap",
-                RenderResourceType::Image,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .format_ = VK_FORMAT_R32G32B32A32_SFLOAT,
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .arrayLayers_ = 6,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_CUBE,
+                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::PrefilteredMap,
                 "PrefilteredMap",
-                RenderResourceType::Image,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .format_ = VK_FORMAT_R16G16B16A16_SFLOAT,
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .arrayLayers_ = 6,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_CUBE,
+                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::BrdfLut,
                 "BrdfLut",
-                RenderResourceType::Image,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .format_ = VK_FORMAT_R16G16_SFLOAT,
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::EuLut,
                 "EuLut",
-                RenderResourceType::Image,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .format_ = VK_FORMAT_R16G16_SFLOAT,
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::EavgLut,
                 "EavgLut",
-                RenderResourceType::Image,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .format_ = VK_FORMAT_R16G16_SFLOAT,
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::MaterialTextures,
                 "MaterialTextures",
-                RenderResourceType::ImageCollection,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                }
             },
             RenderResourceDescription{
                 RenderResourceId::MaterialBuffer,
                 "MaterialBuffer",
-                RenderResourceType::BufferCollection,
-                RenderResourceLifetime::Persistent
+                RenderResourceLifetime::External,
+                RenderBufferDescription{}
             },
             RenderResourceDescription{
                 RenderResourceId::MeshDataBuffer,
                 "MeshDataBuffer",
-                RenderResourceType::BufferCollection,
-                RenderResourceLifetime::Frame
+                RenderResourceLifetime::External,
+                RenderBufferDescription{}
+            },
+            RenderResourceDescription{
+                RenderResourceId::SceneColorHdr,
+                "SceneColorHdr",
+                RenderResourceLifetime::Persistent,
+                RenderImageDescription{
+                    .format_ = VK_FORMAT_R16G16B16A16_SFLOAT,
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::PerSwapchainImage
+                }
+            },
+            RenderResourceDescription{
+                RenderResourceId::BackBuffer,
+                "BackBuffer",
+                RenderResourceLifetime::External,
+                RenderImageDescription{
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::PerSwapchainImage
+                }
+            },
+            RenderResourceDescription{
+                RenderResourceId::MainColorMsaa,
+                "MainColorMsaa",
+                RenderResourceLifetime::Persistent,
+                RenderImageDescription{
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::PerSwapchainImage
+                }
+            },
+            RenderResourceDescription{
+                RenderResourceId::MainDepthSingleSample,
+                "MainDepthSingleSample",
+                RenderResourceLifetime::Persistent,
+                RenderImageDescription{
+                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
+                    .mipLevels_ = 1,
+                    .arrayLayers_ = 1,
+                    .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
+                    .instancePolicy_ = RenderImageInstancePolicy::PerSwapchainImage
+                }
             }
         };
     }

@@ -19,6 +19,9 @@ namespace app
 
         this->renderer_.reset();
 
+        // Renderer 已等待 GPU 完成；Pass 必须在 descriptor 基础设施清理前释放。
+        this->renderContext_.reset();
+
         engine::resource::ResourceManager::Instance().Cleanup();
 
         engine::core::StagingRingAllocator::Instance().Cleanup();
@@ -37,7 +40,7 @@ namespace app
         LOG_INFO("Initializing Vulkan...");
 		engine::core::DeviceSetting setting;
     	setting.validation_ = true;
-        setting.multiSampling_ = true;
+        setting.multiSampling_ = false;
         engine::core::Device::Instance().Init(setting);
 
         // UploadContext 在 Device 就绪后初始化（供资源加载异步上传）
@@ -60,36 +63,23 @@ namespace app
         engine::render::RendererDescription rendererDescription;
         this->renderer_ = std::make_unique<engine::render::Renderer>(rendererDescription);
         this->renderer_->Init(this->window_);
-    }
 
-    engine::render::FrameGraphNodeId Application::AddRenderPass(std::unique_ptr<engine::render::RenderPass> renderPass)
-    {
-        return this->renderer_->AddRenderPass(std::move(renderPass));
-    }
-
-    void Application::AddRenderPassDependency(
-        engine::render::FrameGraphNodeId sourceNodeId,
-        engine::render::FrameGraphNodeId destinationNodeId,
-        engine::render::RenderResourceId resourceId,
-        engine::render::ResourceHazard hazard)
-    {
-        this->renderer_->AddRenderPassDependency(sourceNodeId, destinationNodeId, resourceId, hazard);
-    }
-
-    bool Application::RebuildFrameGraph()
-    {
-        return this->renderer_->RebuildFrameGraph();
+        this->renderContext_ = std::make_unique<engine::render::RenderContext>();
+        if (!this->renderContext_->Init())
+        {
+            LOG_FATAL("Application: failed to initialize RenderContext.");
+        }
     }
 
     void Application::PrepareFrame()
     {
         LOG_INFO("Application: Preparing frame...");
-        // 先填一份有效的 RenderScene（Pass 初始化时解析环境贴图 handle 需要），
-        // 之后每帧 RenderFrame 会重新 Extract + SetRenderScene
+        // 场景快照供资源上传和 Skybox descriptor 初始化使用。
         engine::render::RenderScene initialScene = engine::scene::SceneExtractor::ExtractScene(this->scene_);
         this->renderer_->SetRenderScene(initialScene);
 
-        this->renderer_->PrepareFrame();
+        this->renderer_->PrepareFrame(*this->renderContext_);
+        this->SetUpUI(this->renderer_->GetUIRenderPass());
         this->prepared_ = true;
     }
 
@@ -122,10 +112,10 @@ namespace app
         this->scene_.Init(desc);
     }
 
-    void Application::SetUpUI()
+    void Application::SetUpUI(VkRenderPass targetRenderPass)
     {
         LOG_INFO("Application: start to set up UI...");
-        this->ui_ = std::make_unique<ui::UI>(this->renderer_->GetRenderPass(), this->renderer_->GetPipelineCache(), engine::core::Device::Instance().GetSetting().sampleCount_);
+        this->ui_ = std::make_unique<ui::UI>(targetRenderPass, this->renderer_->GetPipelineCache(), engine::core::Device::Instance().GetSetting().sampleCount_);
 		this->UpdateOverlay();
     }
 
@@ -375,7 +365,9 @@ namespace app
 		this->renderer_->SetRenderScene(renderScene);
 		this->renderer_->Render();
 
+		this->renderer_->BeginUIRenderPass();
 		this->ui_->Draw(this->renderer_->GetCurrentCommandBuffer());
+		this->renderer_->EndUIRenderPass();
 
 		this->renderer_->EndFrame();
 
@@ -520,8 +512,7 @@ namespace app
         int32_t dx = static_cast<int32_t>(this->mousePos.x) - x;
         int32_t dy = static_cast<int32_t>(this->mousePos.y) - y;
 
-        ImGuiIO& io = ImGui::GetIO();
-        if (io.WantCaptureMouse) {
+        if (this->ui_ && ImGui::GetIO().WantCaptureMouse) {
             this->mousePos = glm::vec2(static_cast<float>(x), static_cast<float>(y));
             return;
         }

@@ -1,7 +1,6 @@
 #include "engine/render/frame_graph.h"
 
 #include <queue>
-#include <optional>
 #include <utility>
 #include <unordered_map>
 
@@ -12,32 +11,6 @@ namespace engine::render
 {
     namespace
     {
-        std::optional<PassResourceUsage> FindResourceUsage(std::span<const PassInputResource> resources, RenderResourceId resourceId) noexcept
-        {
-            for (const auto& resource : resources)
-            {
-                if (resource.resource_ == resourceId)
-                {
-                    return GetPassResourceUsage(resource);
-                }
-            }
-
-            return std::nullopt;
-        }
-
-        std::optional<PassResourceUsage> FindResourceUsage(std::span<const PassOutputResource> resources, RenderResourceId resourceId) noexcept
-        {
-            for (const auto& resource : resources)
-            {
-                if (resource.resource_ == resourceId)
-                {
-                    return GetPassResourceUsage(resource);
-                }
-            }
-
-            return std::nullopt;
-        }
-
         bool IsAttachmentUsage(ResourceUsage usage) noexcept
         {
             return usage == ResourceUsage::ColorAttachment || usage == ResourceUsage::DepthAttachment;
@@ -71,7 +44,7 @@ namespace engine::render
         return this->nodes_.find(nodeId) != this->nodes_.end();
     }
 
-    void FrameGraph::AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceId resourceId)
+    void FrameGraph::AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceReference resource)
     {
         if (!this->HasNode(sourceNodeId) || !this->HasNode(destinationNodeId) || sourceNodeId == destinationNodeId)
         {
@@ -82,7 +55,7 @@ namespace engine::render
         this->nodeDependencies_[sourceNodeId].push_back(FrameGraphEdgeDependency{
             .fromNodeId_ = sourceNodeId,
             .toNodeId_ = destinationNodeId,
-            .resourceId_ = resourceId
+            .resource_ = resource
         });
 
         this->needsRebuild_ = true;
@@ -172,12 +145,12 @@ namespace engine::render
 
             for (auto& dependency : incoming)
             {
-                PassResourceUsage srcUsage = this->nodes_[dependency.fromNodeId_].renderPass_->GetResourceUsage(dependency.resourceId_);
-                PassResourceUsage dstUsage = this->nodes_[dependency.toNodeId_].renderPass_->GetResourceUsage(dependency.resourceId_);
+                PassResourceUsage srcUsage = this->nodes_[dependency.fromNodeId_].renderPass_->GetResourceUsage(dependency.resource_);
+                PassResourceUsage dstUsage = this->nodes_[dependency.toNodeId_].renderPass_->GetResourceUsage(dependency.resource_);
                 if (IsAttachmentUsage(srcUsage.type_) && IsAttachmentUsage(dstUsage.type_))
                 {
                     this->executionPlan_.passes_.back().attachmentDependencies_.push_back(CompiledAttachmentDependency{
-                        .resourceId_ = dependency.resourceId_,
+                        .resource_ = dependency.resource_,
                         .srcUsage_ = srcUsage,
                         .dstUsage_ = dstUsage
                     });
@@ -185,7 +158,7 @@ namespace engine::render
                 else
                 {
                     this->executionPlan_.passes_.back().barriersBefore_.push_back(CompiledResourceBarrier{
-                        .resourceId_ = dependency.resourceId_,
+                        .resource_ = dependency.resource_,
                         .srcUsage_ = srcUsage,
                         .dstUsage_ = dstUsage
                     });
@@ -212,7 +185,7 @@ namespace engine::render
         {
             for (const auto& dependency : dependencies)
             {
-                const RenderResourceDescription* resource = FindRenderResourceDescription(dependency.resourceId_);
+                const RenderResourceDescription* resource = FindRenderResourceDescription(dependency.resource_.id_);
                 LOG_DEBUG(
                     "FrameGraph: " << this->nodes_[dependency.fromNodeId_].name_ << " -> "
                     << this->nodes_[dependency.toNodeId_].name_ << " via "

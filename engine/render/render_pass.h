@@ -9,8 +9,9 @@
 #include <vulkan/vulkan.h>
 
 #include "engine/core/buffer.h"
-#include "engine/render/pass_resource.h"
+#include "engine/render/config/pass_resource.h"
 #include "engine/render/render_image.h"
+#include "engine/render/render_pass_description.h"
 #include "engine/render/render_resource_registry.h"
 #include "engine/render/render_scene.h"
 #include "engine/resource/texture.h"
@@ -23,129 +24,58 @@ namespace engine::core
 namespace engine::render
 {
     struct CompiledPass;
-    struct FullScreenPassConfig;
     class RenderPass
     {
         protected:
+            RenderPassDescription                           description_;
             VkRenderPass                                    renderPass_{ VK_NULL_HANDLE };
             std::vector<VkFramebuffer>                      framebuffers_;
             std::vector<VkClearValue>                       clearValues_;
             const RenderResourceRegistry*                   renderResources_{ nullptr };
 
+            // 当前协议：Pass 持有 set 0 的逐帧实例，下标是 frameIndex。
+            std::vector<VkDescriptorSet>                    descriptorSets_;
+            // 下标就是 set 编号；布局由 DescriptorLayoutRegistry 持有。
+            std::vector<VkDescriptorSetLayout>              descriptorSetLayouts_;
+            VkPipelineLayout                                pipelineLayout_{ VK_NULL_HANDLE };
+            std::unordered_map<std::string, VkPipeline>     pipelines_;
+
+            void                                            PrepareDescriptorResources(RenderResourceRegistry& resources);
+            void                                            SetUpDescriptorSetLayouts();
+            void                                            AllocateDescriptorSets();
+            void                                            SetUpPipelineLayout();
+            void                                            SetUpPipelines();
+            void                                            DestroyPipelines();
             void                                            CreateRenderTarget(const CompiledPass& compiledPass, const RenderResourceRegistry& resources, core::SwapChain& swapChain);
             void                                            CreateFramebuffers(const RenderResourceRegistry& resources, core::SwapChain& swapChain);
+
+            void                                            DrawSceneGeometry(VkCommandBuffer cb, uint32_t frameIndex, const RenderScene& renderScene);
+            void                                            DrawSkyboxGeometry(VkCommandBuffer cb, uint32_t frameIndex);
+            void                                            DrawFullscreenTriangle(VkCommandBuffer cb, uint32_t frameIndex, const RenderScene& renderScene);
+            void                                            DrawQueue(std::span<const RenderItem> items, VkCommandBuffer cb, uint32_t frameIndex);
+            // 第一条描述为默认管线；Unlit 使用 "unlit"，其他变体按现有混合/剔除配置匹配。
+            VkPipeline                                      SelectScenePipeline(PipelineVariant variant) const;
         public:
+            explicit RenderPass(const RenderPassDescription& description);
             virtual ~RenderPass();
-            void                                            Prepare(const CompiledPass& compiledPass, const RenderResourceRegistry& resources, core::SwapChain& swapChain, const RenderScene& renderScene);
+            RenderPass(const RenderPass&) = delete;
+            RenderPass& operator=(const RenderPass&) = delete;
+            void                                            Prepare(const CompiledPass& compiledPass, RenderResourceRegistry& resources, core::SwapChain& swapChain);
+            // 当前帧 fence 已完成，Registry 已选定本次图像后，填写该帧的 set 0。
+            void                                            UpdateDescriptorSets(uint32_t frameIndex);
             virtual void                                    RecreateFramebuffers(const RenderResourceRegistry& resources, core::SwapChain& swapChain);
             void                                            DestroyFramebuffers();
             void                                            DestroyRenderTarget();
             VkRenderPass                                    GetHandle() const noexcept;
             VkFramebuffer                                   GetFramebuffer(uint32_t imageIndex) const;
             std::span<const VkClearValue>                   GetClearValues() const noexcept;
-            virtual std::string_view                        GetName() const noexcept = 0;
-            virtual std::span<const PassInputResource>      GetInputResources() const noexcept = 0;
-            virtual std::span<const PassOutputResource>     GetOutputResources() const noexcept = 0;
-            virtual PassResourceUsage                       GetResourceUsage(RenderResourceId resourceId) const noexcept = 0;
-            virtual void                                    ExecutePreProcess(const RenderScene& renderScene) = 0;
-            virtual void                                    Execute(VkCommandBuffer currentCB, uint32_t frameIndex, uint32_t imageIndex, const RenderScene& renderScene) = 0;
-    };
-
-    class SkyBoxRenderPass : public RenderPass
-    {
-        private:
-            std::vector<VkDescriptorSet>                    skyboxSets_;
-
-            VkPipelineLayout                                pipelineLayout_{ VK_NULL_HANDLE };
-            std::unordered_map<std::string, VkPipeline>     pipelines_;
-
-            void                                            SetUpDescriptorSetLayout(const RenderScene& renderScene);
-            void                                            SetUpPipeline(const std::string vertexShader, const std::string fragmentShader);
-            void                                            Cleanup();
-
-        public:
-            SkyBoxRenderPass();
-            ~SkyBoxRenderPass() override;
-            std::string_view                                GetName() const noexcept override;
-            std::span<const PassInputResource>              GetInputResources() const noexcept override;
-            std::span<const PassOutputResource>             GetOutputResources() const noexcept override;
-            PassResourceUsage                               GetResourceUsage(RenderResourceId resourceId) const noexcept override;
-            void                                            ExecutePreProcess(const RenderScene& renderScene) override;
-            void                                            Execute(VkCommandBuffer currentCB, uint32_t frameIndex, uint32_t imageIndex, const RenderScene& renderScene) override;
-    };
-
-    class PBRRenderPass : public RenderPass
-    {
-        private:
-            struct MeshPushConstantBlock 
-            {
-    		    int32_t meshIndex;
-    		    int32_t materialIndex;
-    	    };
-
-            struct PreProcessTextureList
-            {
-                resource::Texture2D lut_;
-                resource::Texture2D eu_;
-                resource::Texture2D eavg_;
-            };
-
-            std::vector<VkDescriptorSet>                sceneSets_;
-
-            VkPipelineLayout                            pipelineLayout_{ VK_NULL_HANDLE };
-            std::unordered_map<std::string, VkPipeline> pipelines_;
-
-            PreProcessTextureList                       textureList_;
-
-            resource::Texture2D                         PreComputeTexture(const FullScreenPassConfig& config);
-
-            void                                        SetUpDescriptorSetLayout(const RenderScene& renderScene);
-            void                                        SetUpPipeline(const std::string vertexShader, const std::string fragmentShader);
-            void                                        DrawQueue(const std::vector<RenderItem>& items, VkCommandBuffer cb, uint32_t frameIndex);
-            VkPipeline                                  SelectPipeline(PipelineVariant variant);
-            void                                        Cleanup();
-        public:
-
-            PBRRenderPass();
-            ~PBRRenderPass() override;
-            std::string_view                            GetName() const noexcept override;
-            std::span<const PassInputResource>          GetInputResources() const noexcept override;
-            std::span<const PassOutputResource>         GetOutputResources() const noexcept override;
-            PassResourceUsage                           GetResourceUsage(RenderResourceId resourceId) const noexcept override;
-            void                                        ExecutePreProcess(const RenderScene& renderScene) override;
-            void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex, uint32_t imageIndex, const RenderScene& renderScene) override;
-
-    };
-
-    class ToneMappingRenderPass : public RenderPass
-    {
-        private:
-            struct ToneMappingPushConstant
-            {
-                float exposure_;
-            };
-
-            VkSampler                                   sampler_{ VK_NULL_HANDLE };
-            std::vector<VkDescriptorSet>                descriptorSets_;
-            VkPipelineLayout                            pipelineLayout_{ VK_NULL_HANDLE };
-            VkPipeline                                  pipeline_{ VK_NULL_HANDLE };
-
-            void                                        CreateSampler();
-            void                                        SetUpDescriptorSets();
-            void                                        SetUpPipeline(const std::string& vertexShader, const std::string& fragmentShader);
-            void                                        Cleanup();
-
-        public:
-            ToneMappingRenderPass();
-            ~ToneMappingRenderPass() override;
-            ToneMappingRenderPass(const ToneMappingRenderPass&) = delete;
-            ToneMappingRenderPass& operator=(const ToneMappingRenderPass&) = delete;
-            std::string_view                            GetName() const noexcept override;
-            std::span<const PassInputResource>          GetInputResources() const noexcept override;
-            std::span<const PassOutputResource>         GetOutputResources() const noexcept override;
-            PassResourceUsage                           GetResourceUsage(RenderResourceId resourceId) const noexcept override;
-            void                                        RecreateFramebuffers(const RenderResourceRegistry& resources, core::SwapChain& swapChain) override;
-            void                                        ExecutePreProcess(const RenderScene& renderScene) override;
-            void                                        Execute(VkCommandBuffer currentCB, uint32_t frameIndex, uint32_t imageIndex, const RenderScene& renderScene) override;
+            std::string_view                                GetName() const noexcept;
+            std::span<const PassInputResource>              GetInputResources() const noexcept;
+            std::span<const PassOutputResource>             GetOutputResources() const noexcept;
+            // Input/Output 按 ID + 成员匹配；仅传 ID 时查询 Source。
+            PassResourceUsage                               GetResourceUsage(RenderResourceReference reference) const noexcept;
+            PassResourceUsage                               GetResourceUsage(RenderResourceId resourceId) const noexcept;
+            // Renderer 已开始 RenderPass 并设置 viewport/scissor；这里只录制配置指定的绘制命令。
+            void                                            Execute(VkCommandBuffer currentCB, uint32_t frameIndex, const RenderScene& renderScene);
     };
 }

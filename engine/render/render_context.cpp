@@ -4,11 +4,16 @@
 
 namespace engine::render
 {
-    bool RenderContext::Init()
+    bool RenderContext::Init(std::span<const RenderPassDescription> pipelineDescriptions)
     {
-        this->renderPassPointers_[0] = &this->renderPasses_.skyboxPass;
-        this->renderPassPointers_[1] = &this->renderPasses_.pbrPass;
-        this->renderPassPointers_[2] = &this->renderPasses_.toneMappingPass;
+        this->pipelineDescriptions_.assign(pipelineDescriptions.begin(), pipelineDescriptions.end());
+        this->renderPasses_.clear();
+        this->renderPasses_.reserve(this->pipelineDescriptions_.size());
+
+        for (const RenderPassDescription& description : this->pipelineDescriptions_)
+        {
+            this->renderPasses_.push_back(std::make_unique<RenderPass>(description));
+        }
 
         return this->RebuildFrameGraph();
     }
@@ -17,25 +22,27 @@ namespace engine::render
     {
         this->frameGraph_.Reset();
 
-        std::array<FrameGraphNodeId, 3> nodeIds{};
-        for (RenderPassIndex index = 0; index < this->renderPassPointers_.size(); index++)
+        std::vector<FrameGraphNodeId> nodeIds;
+        nodeIds.reserve(this->renderPasses_.size());
+        for (RenderPassIndex index = 0; index < this->renderPasses_.size(); ++index)
         {
-            RenderPass* renderPass = this->renderPassPointers_[index];
-            nodeIds[index] = this->frameGraph_.AddPassNode(
-                renderPass->GetName(),
+            RenderPass* renderPass = this->renderPasses_[index].get();
+            const FrameGraphNodeId nodeId = this->frameGraph_.AddPassNode(
+                this->pipelineDescriptions_[index].name_,
                 renderPass
             );
+            nodeIds.push_back(nodeId);
 
-            if (nodeIds[index] == kInvalidFrameGraphNodeId)
+            if (nodeId == kInvalidFrameGraphNodeId)
             {
                 this->frameGraph_.Reset();
                 return false;
             }
         }
 
-        // 顺序由 Context 显式决定，不根据 Request 自动推导依赖。
-        this->frameGraph_.AddDependency(nodeIds[0], nodeIds[1], RenderResourceId::SceneColorHdr);
-        this->frameGraph_.AddDependency(nodeIds[1], nodeIds[2], RenderResourceId::SceneColorHdr);
+        // Dependency 仍由 Context 显式声明，暂不从 Input/Output 自动推导。
+        this->frameGraph_.AddDependency(nodeIds[0], nodeIds[1], {RenderResourceId::SceneColorHdr});
+        this->frameGraph_.AddDependency(nodeIds[1], nodeIds[2], {RenderResourceId::SceneColorHdr});
 
         return this->frameGraph_.Rebuild();
     }
@@ -52,11 +59,11 @@ namespace engine::render
 
     RenderPass* RenderContext::GetRenderPass(RenderPassIndex renderPassIndex) const noexcept
     {
-        if (renderPassIndex >= this->renderPassPointers_.size())
+        if (renderPassIndex >= this->renderPasses_.size())
         {
             return nullptr;
         }
 
-        return this->renderPassPointers_[renderPassIndex];
+        return this->renderPasses_[renderPassIndex].get();
     }
 }

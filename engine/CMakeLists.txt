@@ -30,6 +30,7 @@ set(ENGINE_CORE_HEADERS
     "core/staging_ring_allocator.h"
     "core/descriptor_allocator.h"
     "core/descriptor_layout_registry.h"
+    "core/config/schema.h"
 )
 
 # --- Resource ---
@@ -55,7 +56,7 @@ set(ENGINE_SCENE_SRC
 set(ENGINE_SCENE_HEADERS
     "scene/camera.h"
     "scene/scene.h"
-    "scene/scene_description.h"
+    "scene/config/scene_description.h"
     "scene/scene_extractor.h"
 )
 
@@ -63,14 +64,10 @@ set(ENGINE_SCENE_HEADERS
 set(ENGINE_RENDER_SRC
     "render/renderer.cpp"
     "render/pipeline_cache_file.cpp"
-    "render/skybox_render_pass.cpp"
-    "render/pbr_render_pass.cpp"
-    "render/fullscreen_pass.cpp"
     "render/render_scene.cpp"
 "render/render_image.cpp"
-    "render/pass_resource.cpp"
+    "render/config/pass_resource.cpp"
     "render/frame_graph.cpp"
-    "render/tone_mapping_render_pass.cpp"
     "render/render_context.cpp"
     "render/render_resource_registry.cpp"
     "render/render_pass.cpp"
@@ -79,10 +76,13 @@ set(ENGINE_RENDER_HEADERS
     "render/renderer.h"
     "render/pipeline_cache_file.h"
     "render/render_pass.h"
-    "render/fullscreen_pass.h"
     "render/render_scene.h"
+    "render/config/shader_protocol.h"
+    "render/config/default_render_pipeline.h"
+    "render/config/graphics_pipeline_defaults.h"
+    "render/render_pass_description.h"
 "render/render_image.h"
-    "render/pass_resource.h"
+    "render/config/pass_resource.h"
     "render/frame_graph.h"
     "render/render_context.h"
     "render/render_resource_registry.h"
@@ -143,4 +143,3 @@ add_library(engine STATIC ${ENGINE_SRC} ${ENGINE_HEADERS} ${BASISU_SOURCES})
 target_include_directories(engine PUBLIC ..)
 
 target_link_libraries(engine PUBLIC ${Vulkan_LIBRARY})
-

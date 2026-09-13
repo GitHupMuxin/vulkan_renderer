@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-#include "engine/render/pass_resource.h"
+#include "engine/render/config/pass_resource.h"
 #include "engine/render/render_pass.h"
 
 namespace engine::render
@@ -31,19 +31,19 @@ namespace engine::render
     {
         FrameGraphNodeId fromNodeId_ = kInvalidFrameGraphNodeId;
         FrameGraphNodeId toNodeId_ = kInvalidFrameGraphNodeId;
-        RenderResourceId resourceId_{};
+        RenderResourceReference resource_{};
     };
 
     struct CompiledResourceBarrier
     {
-        RenderResourceId resourceId_{};
+        RenderResourceReference resource_{};
         PassResourceUsage srcUsage_{};
         PassResourceUsage dstUsage_{};
     };
 
     struct CompiledAttachmentDependency
     {
-        RenderResourceId    resourceId_{};
+        RenderResourceReference resource_{};
         PassResourceUsage   srcUsage_{};
         PassResourceUsage   dstUsage_{};
     };
@@ -84,7 +84,7 @@ namespace engine::render
             FrameGraphNodeId AddPassNode(std::string_view name, RenderPass* renderPass);
 
             // 按照 src -> dst 的方向，将显式依赖保存到源 Node 的出边表。
-            void AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceId resourceId);
+            void AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceReference resource);
 
             // 显式重构 Edge 和 ExecutionPlan；没有变化时直接返回已有结果。
             bool Rebuild();

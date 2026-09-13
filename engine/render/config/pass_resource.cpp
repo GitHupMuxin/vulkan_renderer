@@ -1,6 +1,6 @@
-#include "engine/render/pass_resource.h"
+#include "engine/render/config/pass_resource.h"
 
-#include "engine/render/render_scene.h"
+#include "engine/render/config/shader_protocol.h"
 
 #include <array>
 
@@ -37,7 +37,7 @@ namespace engine::render
                 "MainCamera",
                 RenderResourceLifetime::Frame,
                 RenderBufferDescription{
-                    .size_ = sizeof(UBOMatricesUpload)
+                    .size_ = sizeof(shader_protocol::CameraUniformData)
                 }
             },
             RenderResourceDescription{
@@ -45,43 +45,15 @@ namespace engine::render
                 "SceneParam",
                 RenderResourceLifetime::Frame,
                 RenderBufferDescription{
-                    .size_ = sizeof(ParamsUpload)
+                    .size_ = sizeof(shader_protocol::SceneParamUniformData)
                 }
             },
             RenderResourceDescription{
-                RenderResourceId::EnvironmentCube,
-                "EnvironmentCube",
+                RenderResourceId::Environment,
+                "Environment",
                 RenderResourceLifetime::External,
-                RenderImageDescription{
-                    .format_ = VK_FORMAT_R16G16B16A16_SFLOAT,
-                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
-                    .arrayLayers_ = 6,
-                    .viewType_ = VK_IMAGE_VIEW_TYPE_CUBE,
-                    .instancePolicy_ = RenderImageInstancePolicy::Single
-                }
-            },
-            RenderResourceDescription{
-                RenderResourceId::IrradianceMap,
-                "IrradianceMap",
-                RenderResourceLifetime::External,
-                RenderImageDescription{
-                    .format_ = VK_FORMAT_R32G32B32A32_SFLOAT,
-                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
-                    .arrayLayers_ = 6,
-                    .viewType_ = VK_IMAGE_VIEW_TYPE_CUBE,
-                    .instancePolicy_ = RenderImageInstancePolicy::Single
-                }
-            },
-            RenderResourceDescription{
-                RenderResourceId::PrefilteredMap,
-                "PrefilteredMap",
-                RenderResourceLifetime::External,
-                RenderImageDescription{
-                    .format_ = VK_FORMAT_R16G16B16A16_SFLOAT,
-                    .samples_ = VK_SAMPLE_COUNT_1_BIT,
-                    .arrayLayers_ = 6,
-                    .viewType_ = VK_IMAGE_VIEW_TYPE_CUBE,
-                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                EnvironmentDescription{
+                    .path_ = "environments/papermill.ktx"
                 }
             },
             RenderResourceDescription{
@@ -94,7 +66,8 @@ namespace engine::render
                     .mipLevels_ = 1,
                     .arrayLayers_ = 1,
                     .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
-                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                    .instancePolicy_ = RenderImageInstancePolicy::Single,
+                    .path_ = "textures/lut/brdf_lut.ktx"
                 }
             },
             RenderResourceDescription{
@@ -107,7 +80,8 @@ namespace engine::render
                     .mipLevels_ = 1,
                     .arrayLayers_ = 1,
                     .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
-                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                    .instancePolicy_ = RenderImageInstancePolicy::Single,
+                    .path_ = "textures/lut/Eu_map.ktx"
                 }
             },
             RenderResourceDescription{
@@ -120,7 +94,8 @@ namespace engine::render
                     .mipLevels_ = 1,
                     .arrayLayers_ = 1,
                     .viewType_ = VK_IMAGE_VIEW_TYPE_2D,
-                    .instancePolicy_ = RenderImageInstancePolicy::Single
+                    .instancePolicy_ = RenderImageInstancePolicy::Single,
+                    .path_ = "textures/lut/Eavg_map.ktx"
                 }
             },
             RenderResourceDescription{

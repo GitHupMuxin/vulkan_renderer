@@ -13,14 +13,6 @@ namespace engine::scene
 
         this->LoadAsset(desc);
 
-        // prefiltered cube map 的 mip 层数由生成阶段决定（numMips），
-        // shader 用它计算 specular IBL 的 textureLod 层级，
-        // 必须从生成好的环境贴图查询，否则未初始化导致 lod 越界
-        if (auto* cubeMap = this->GetCubeMap())
-        {
-            this->params_.prefilteredCubeMipLevels = static_cast<float>(cubeMap->GetPrefilteredCubeMipLevels());
-        }
-
         // Handle 失效自检：加载一个临时模型 → 释放 → 应返回 nullptr。
         // 纯 CPU 操作，不进入渲染热路径，不碰场景已有资源。
         {
@@ -48,12 +40,6 @@ namespace engine::scene
         {
             resource::ModelHandle handle = rm.LoadModel(rm.assetPath_ + path);
             this->AddObject(handle);
-        }
-
-        // 环境贴图是用户资产，存 Handle（可校验/未来可替换）
-        if (!desc.environmentPath.empty())
-        {
-            this->cubeMapHandle_ = rm.LoadSkyBox(rm.assetPath_ + desc.environmentPath);
         }
     }
 
@@ -110,10 +96,6 @@ namespace engine::scene
         return this->sceneObjects_.size();
     }
 
-    resource::EnvironmentCubeMap* Scene::GetCubeMap()
-    {
-        return resource::ResourceManager::Instance().GetEnvironmentCubeMap(this->cubeMapHandle_);
-    }
     
 
 } 

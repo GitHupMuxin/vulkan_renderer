@@ -5,6 +5,9 @@
  */
 
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "includes/camera.glsl"
 
 layout (location = 0) in vec3 inPos;
 layout (location = 1) in vec3 inNormal;
@@ -13,14 +16,6 @@ layout (location = 3) in vec2 inUV1;
 layout (location = 4) in uvec4 inJoint0;
 layout (location = 5) in vec4 inWeight0;
 layout (location = 6) in vec4 inColor0;
-
-layout (set = 0, binding = 0) uniform UBO 
-{
-	mat4 projection;
-	mat4 model;
-	mat4 view;
-	vec3 camPos;
-} ubo;
 
 #define MAX_NUM_JOINTS 128
 

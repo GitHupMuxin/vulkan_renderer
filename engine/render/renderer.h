@@ -3,7 +3,6 @@
 #include "engine/core/device.h"
 #include "engine/core/swapchain.h"
 #include "engine/render/render_pass.h"
-#include "engine/render/fullscreen_pass.h"
 #include "engine/render/render_scene.h"
 #include "engine/render/render_image.h"
 #include "engine/render/render_resource_registry.h"
@@ -89,6 +88,12 @@ namespace engine::render
             void                                        CreateBuffer(const RenderResourceDescription& resource, VkBufferUsageFlags usage);
             void                                        CreateImage(const RenderResourceDescription& resource, VkImageUsageFlags usage);
 
+            // 每帧 Uniform：入口只表达更新流程，具体协议组装与 Buffer 写入分别处理。
+            void                                        UpdateFrameUniformData();
+            void                                        UpdateCameraUniformData(const RenderScene& renderScene);
+            void                                        UpdateSceneParamUniformData(const RenderScene& renderScene);
+            void                                        WriteFrameUniformBuffer(RenderResourceId resourceId, const void* data, VkDeviceSize size);
+
             // UI 输出：复用 ToneMapping 写过的 Swapchain image，LOAD 原颜色，结束时转换到 PRESENT。
             void                                        PrepareUI();
             void                                        CreateUIFramebuffers();
@@ -115,9 +120,8 @@ namespace engine::render
             // RenderContext：接收场景渲染决策，创建资源并准备三个场景 Pass 与独立 UI 输出；Context 必须存活至 Renderer 销毁。
             void                                        PrepareFrame(const RenderContext& renderContext);
 
-            // RenderScene：接收当前帧 CPU 数据并上传共享 UBO。
+            // 在 BeginFrame 成功后调用：保存场景、更新 Uniform 和当前帧 Pass set 0。
             void                                        SetRenderScene(const RenderScene& renderScene);
-            void                                        UploadFrameUniformData();
 
             // Window / SwapChain：窗口接入和呈现资源重建。
             void                                        Init(engine::platform::Window& window);

@@ -478,7 +478,9 @@ namespace engine::resource
         std::string filename, 
         VkFormat format,
         VkImageUsageFlags imageUsageFlags,
-        VkImageLayout imageLayout)
+        VkImageLayout imageLayout,
+        VkSamplerAddressMode addressMode,
+        bool enableAnisotropy)
     {
         gli::texture2d tex2D(gli::load(filename.c_str()));	
         assert(!tex2D.empty());
@@ -574,15 +576,15 @@ namespace engine::resource
         samplerCreateInfo.magFilter = VK_FILTER_LINEAR;
         samplerCreateInfo.minFilter = VK_FILTER_LINEAR;
         samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        samplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerCreateInfo.addressModeU = addressMode;
+        samplerCreateInfo.addressModeV = addressMode;
+        samplerCreateInfo.addressModeW = addressMode;
         samplerCreateInfo.mipLodBias = 0.0f;
         samplerCreateInfo.compareOp = VK_COMPARE_OP_NEVER;
         samplerCreateInfo.minLod = 0.0f;
         samplerCreateInfo.maxLod = (float)this->mipLevels_;
-        samplerCreateInfo.maxAnisotropy = device.GetEnableFeatures().samplerAnisotropy ? device.GetDeviceProperties().limits.maxSamplerAnisotropy : 1.0f;
-        samplerCreateInfo.anisotropyEnable = device.GetEnableFeatures().samplerAnisotropy;
+        samplerCreateInfo.anisotropyEnable = enableAnisotropy && device.GetEnableFeatures().samplerAnisotropy;
+        samplerCreateInfo.maxAnisotropy = samplerCreateInfo.anisotropyEnable ? device.GetDeviceProperties().limits.maxSamplerAnisotropy : 1.0f;
         samplerCreateInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
 
         SUCCESS_OR_LOG(

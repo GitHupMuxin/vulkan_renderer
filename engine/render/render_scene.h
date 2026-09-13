@@ -34,10 +34,8 @@ namespace engine::render
 
     struct EnvironmentRenderData
     {
-        resource::EnvironmentCubeMapHandle  environmentCubeMap = { UINT32_MAX, 0 };
         float                               exposure = 4.5f;
         float                               gamma = 2.2f;
-        float                               prefilteredCubeMipLevels = 1.0f;
         float                               scaleIBLAmbient = 1.0f;
         // TODO: exposure/gamma/scaleIBLAmbient 严格说是"显示/色调参数"，边界模糊，
         // 暂留 Environment（通过 uboParams 上传，改 shader 布局风险大），后续再拆
@@ -93,27 +91,6 @@ namespace engine::render
         std::vector<RenderItem>             transparentItems;
     };
 
-    // shader set=0 binding=0（material_pbr.frag `UBO`）的 CPU 侧布局，std140 对齐
-    struct UBOMatricesUpload
-    {
-        glm::mat4   projection{ 1.0f };
-        glm::mat4   model{ 1.0f };
-        glm::mat4   view{ 1.0f };
-        glm::vec3   camPos{ 0.0f };
-    };
-
-    // shader set=0 binding=1（material_pbr.frag `UBOParams`）的 CPU 侧布局，std140 对齐
-    struct ParamsUpload
-    {
-        glm::vec4   lightDir{ 0.0f };
-        float       exposure = 4.5f;
-        float       gamma = 2.2f;
-        float       prefilteredCubeMipLevels = 1.0f;
-        float       scaleIBLAmbient = 1.0f;
-        float       debugViewInputs = 0.0f;
-        float       debugViewEquation = 0.0f;
-        float       debugBsdfType = 0.0f;
-    };
 
 
 

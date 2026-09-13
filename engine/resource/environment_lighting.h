@@ -23,6 +23,3 @@ namespace engine::resource
 
 
 }
-
-
-

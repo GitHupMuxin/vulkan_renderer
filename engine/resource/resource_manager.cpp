@@ -1,4 +1,6 @@
 #include <chrono>
+#include <filesystem>
+#include <stdexcept>
 #include "engine/resource/model.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/core/staging_ring_allocator.h"
@@ -39,8 +41,58 @@ namespace engine::resource
         core::StagingRingAllocator::Instance().WaitAll();
     }
 
+    TextureHandle ResourceManager::LoadTexture(const std::string& fileName, VkFormat format, VkImageViewType viewType)
+    {
+        if (format == VK_FORMAT_UNDEFINED)
+            throw std::invalid_argument("Texture format must be specified: " + fileName);
+        if (!std::filesystem::is_regular_file(fileName))
+            throw std::invalid_argument("Texture file does not exist: " + fileName);
+
+        std::unique_ptr<Texture> texture;
+        switch (viewType)
+        {
+            case VK_IMAGE_VIEW_TYPE_2D:
+            {
+                auto image = std::make_unique<Texture2D>();
+                image->LoadFromFile(fileName, format, VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false);
+                texture = std::move(image);
+                break;
+            }
+            case VK_IMAGE_VIEW_TYPE_CUBE:
+            {
+                auto image = std::make_unique<TextureCubeMap>();
+                image->LoadFromFile(fileName, format);
+                texture = std::move(image);
+                break;
+            }
+            default:
+                throw std::invalid_argument("Unsupported texture view type: " + fileName);
+        }
+
+        core::StagingRingAllocator::Instance().WaitUntil(texture->readyAt_);
+        this->textureSlots_.push_back({std::move(texture), 0, ResourceState::Ready});
+        return {static_cast<uint32_t>(this->textureSlots_.size() - 1), 0};
+    }
+
+    const Texture* ResourceManager::GetTexture(TextureHandle handle) const noexcept
+    {
+        if (handle.index >= this->textureSlots_.size()) return nullptr;
+        const auto& slot = this->textureSlots_[handle.index];
+        return slot.state == ResourceState::Ready && slot.generation == handle.generation
+            ? slot.resource.get() : nullptr;
+    }
+
     void ResourceManager::Cleanup()
     {
+        // Preserve slot indices so a later Init cannot revive an old handle.
+        for (auto& slot : this->textureSlots_)
+        {
+            if (slot.state == ResourceState::Free) continue;
+            slot.resource.reset();
+            slot.state = ResourceState::Free;
+            ++slot.generation;
+        }
         for (auto& slot : this->modelSlots_)
         {
             slot.resource.reset();
@@ -231,6 +283,7 @@ namespace engine::resource
 		model->CreateMaterialBuffer();
 		model->CreateMeshDataBuffer();
         model->CreateDescriptorSet();
+        model->UpdateDescriptorSets();
 		auto tFileLoad = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - tStart).count();
 		LOG_INFO("ResourceManager: model loaded in " << tFileLoad << " ms: " << fileName);
 
@@ -247,7 +300,7 @@ namespace engine::resource
     }
    
     
-    EnvironmentCubeMapHandle ResourceManager::LoadSkyBox(const std::string& fileName)
+    EnvironmentCubeMapHandle ResourceManager::LoadEnvironment(const std::string& fileName)
     {
         LOG_INFO("ResourceManager: loading environment from file: " << fileName);
         std::unique_ptr<EnvironmentCubeMap> cubeMap = std::make_unique<EnvironmentCubeMap>();

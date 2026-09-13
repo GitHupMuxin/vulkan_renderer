@@ -16,10 +16,8 @@ namespace engine::scene
 
     void SceneExtractor::ExtracEnvironment(const Scene& scene, render::EnvironmentRenderData& environmentData)
     {
-        environmentData.environmentCubeMap = scene.cubeMapHandle_;
         environmentData.exposure = scene.params_.exposure;
         environmentData.gamma = scene.params_.gamma;
-        environmentData.prefilteredCubeMipLevels = scene.params_.prefilteredCubeMipLevels;
         environmentData.scaleIBLAmbient = scene.params_.scaleIBLAmbient;
     }
 
@@ -93,11 +91,19 @@ namespace engine::scene
                             item.renderQueue = render::RenderQueue::Transparent;
                             break;
                     }
-                    item.pipeline = primitive->material.unlit
-                        ? render::PipelineVariant::Unlit
-                        : (primitive->material.doubleSided
-                            ? render::PipelineVariant::DoubleSided
-                            : render::PipelineVariant::Pbr);
+                    // 当前只有一条透明管线，BLEND 优先使用它。
+                    if (item.renderQueue == render::RenderQueue::Transparent)
+                    {
+                        item.pipeline = render::PipelineVariant::AlphaBlending;
+                    }
+                    else
+                    {
+                        item.pipeline = primitive->material.unlit
+                            ? render::PipelineVariant::Unlit
+                            : (primitive->material.doubleSided
+                                ? render::PipelineVariant::DoubleSided
+                                : render::PipelineVariant::Pbr);
+                    }
 
                     // 分装到对应队列
                     switch (item.renderQueue)

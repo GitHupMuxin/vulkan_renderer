@@ -224,6 +224,8 @@ namespace engine::resource
 			virtual VkDescriptorSet& 					GetDescriptorSetMaterial() = 0;
 
 			virtual void 								CreateDescriptorSet() = 0;
+			// Set 分配后填写资源引用；调用时这些 Set 必须尚未被 GPU 使用。
+			virtual void 								UpdateDescriptorSets() = 0;
 
 			// Render-layer interface (VBO/IBO + scene graph + animation)
 			virtual VkBuffer 							GetVertexBuffer() = 0;
@@ -350,6 +352,7 @@ namespace engine::resource
 			void 								CreateMeshDataBuffer() override;
 
 			void 								CreateDescriptorSet() override;
+			void 								UpdateDescriptorSets() override;
 
 			void 								UpdateMeshDataBuffer(uint32_t index) override;
 			bool 								IsReady() const override;

@@ -3,8 +3,7 @@
 #include <glm/glm.hpp>
 #include "engine/resource/model.h"
 #include "engine/scene/camera.h"
-#include "engine/scene/scene_description.h"
-#include "engine/resource/environment_lighting.h"
+#include "engine/scene/config/scene_description.h"
 #include "engine/resource/resource_manager.h"
 
 namespace engine::scene
@@ -14,7 +13,6 @@ namespace engine::scene
         glm::vec4   lightDir;
         float       exposure = 4.5f;
         float       gamma = 2.2f;
-        float       prefilteredCubeMipLevels;
         float       scaleIBLAmbient = 1.0f;
         float       debugViewInputs = 0;
         float       debugViewEquation = 0;
@@ -34,7 +32,6 @@ namespace engine::scene
 
         public:
             std::vector<SceneObject>            sceneObjects_;
-            resource::EnvironmentCubeMapHandle  cubeMapHandle_;
 
             SceneParams                         params_;
 
@@ -55,7 +52,6 @@ namespace engine::scene
             // 便捷解析：handle → 指针（供 SceneExtractor/应用层调用，内部做校验，失败返回 nullptr）
             resource::Model*                    GetModelAt(size_t index);
             size_t                              GetModelCount() const;
-            resource::EnvironmentCubeMap*       GetCubeMap();
     };
     
 

@@ -13,12 +13,16 @@
 #endif
 #define STBI_MSC_SECURE_CRT
 
+#include <array>
+#include <stdexcept>
+
 #include "engine/utils/log.h"
 #include "engine/resource/model.h"
+#include "engine/resource/resource_manager.h"
 #include "engine/core/staging_ring_allocator.h"
 #include "engine/core/descriptor_allocator.h"
 #include "engine/core/descriptor_layout_registry.h"
-#include "engine/core/schema.h"
+#include "engine/core/config/schema.h"
 
 namespace engine::resource
 {
@@ -1464,6 +1468,80 @@ namespace engine::resource
 
 		for (int i = 0; i < this->descriptorSetsMeshData_.size(); i++)
 			this->descriptorSetsMeshData_[i] = core::DescriptorAllocator::Instance().AllocatePersistent(meshDataLayout);
+	}
+
+	void GLTFModel::UpdateDescriptorSets()
+	{
+		const VkDevice device = core::Device::Instance().GetLogicalDeviceHandle();
+		const auto* emptyTexture = ResourceManager::Instance().GetEmptyTexture2D();
+		if (emptyTexture == nullptr)
+			throw std::logic_error("Default texture must exist before updating model descriptor sets");
+
+		// set 1：每个 Material 的五张纹理，缺失项沿用默认纹理。
+		for (const auto& material : this->materials_)
+		{
+			std::array<VkDescriptorImageInfo, schema::kMaterialSet.size()> imageDescriptors{
+				emptyTexture->descriptor_,
+				emptyTexture->descriptor_,
+				material.normalTexture ? material.normalTexture->descriptor_ : emptyTexture->descriptor_,
+				material.occlusionTexture ? material.occlusionTexture->descriptor_ : emptyTexture->descriptor_,
+				material.emissiveTexture ? material.emissiveTexture->descriptor_ : emptyTexture->descriptor_
+			};
+
+			if (material.pbrWorkflows.metallicRoughness)
+			{
+				if (material.baseColorTexture)
+					imageDescriptors[0] = material.baseColorTexture->descriptor_;
+				if (material.metallicRoughnessTexture)
+					imageDescriptors[1] = material.metallicRoughnessTexture->descriptor_;
+			}
+			else if (material.pbrWorkflows.specularGlossiness)
+			{
+				if (material.extension.diffuseTexture)
+					imageDescriptors[0] = material.extension.diffuseTexture->descriptor_;
+				if (material.extension.specularGlossinessTexture)
+					imageDescriptors[1] = material.extension.specularGlossinessTexture->descriptor_;
+			}
+
+			std::array<VkWriteDescriptorSet, schema::kMaterialSet.size()> writes{};
+			for (size_t i = 0; i < writes.size(); ++i)
+			{
+				const auto& binding = schema::kMaterialSet[i];
+				auto& write = writes[i];
+				write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				write.dstSet = material.descriptorSet;
+				write.dstBinding = binding.binding;
+				write.descriptorType = binding.descriptorType;
+				write.descriptorCount = binding.descriptorCount;
+				write.pImageInfo = &imageDescriptors[i];
+			}
+			vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+		}
+
+		// set 3：当前 Model 的材质参数 SSBO。
+		const auto& materialBinding = schema::kMaterialSSBO[0];
+		VkWriteDescriptorSet materialWrite{};
+		materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		materialWrite.dstSet = this->descriptorSetMaterial_;
+		materialWrite.dstBinding = materialBinding.binding;
+		materialWrite.descriptorType = materialBinding.descriptorType;
+		materialWrite.descriptorCount = materialBinding.descriptorCount;
+		materialWrite.pBufferInfo = &this->shaderMaterialBuffer_.descriptor;
+		vkUpdateDescriptorSets(device, 1, &materialWrite, 0, nullptr);
+
+		// set 2：每个 frame 的 Set 引用对应 frame 的 Mesh SSBO。
+		const auto& meshBinding = schema::kMeshDataSSBO[0];
+		for (size_t frameIndex = 0; frameIndex < this->descriptorSetsMeshData_.size(); ++frameIndex)
+		{
+			VkWriteDescriptorSet meshWrite{};
+			meshWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			meshWrite.dstSet = this->descriptorSetsMeshData_[frameIndex];
+			meshWrite.dstBinding = meshBinding.binding;
+			meshWrite.descriptorType = meshBinding.descriptorType;
+			meshWrite.descriptorCount = meshBinding.descriptorCount;
+			meshWrite.pBufferInfo = &this->shaderMeshDataBuffers_.at(frameIndex).descriptor;
+			vkUpdateDescriptorSets(device, 1, &meshWrite, 0, nullptr);
+		}
 	}
 
 	void GLTFModel::UpdateMeshDataBuffer(uint32_t index)

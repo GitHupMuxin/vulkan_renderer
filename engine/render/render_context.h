@@ -1,27 +1,21 @@
 #pragma once
 
-#include <array>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include "engine/render/frame_graph.h"
-#include "engine/render/pass_resource.h"
+#include "engine/render/config/pass_resource.h"
 #include "engine/render/render_pass.h"
+#include "engine/render/render_pass_description.h"
 
 namespace engine::render
 {
-    struct RenderPasses
-    {
-        SkyBoxRenderPass skyboxPass;
-        PBRRenderPass pbrPass;
-        ToneMappingRenderPass toneMappingPass;
-    };
-
     class RenderContext
     {
         private:
-            RenderPasses renderPasses_;
-            std::array<RenderPass*, 3> renderPassPointers_;
+            std::vector<RenderPassDescription>         pipelineDescriptions_;
+            std::vector<std::unique_ptr<RenderPass>>   renderPasses_;
             std::span<const RenderResourceDescription> resourceDescriptions_ = GetRenderResourceDescriptions();
             FrameGraph frameGraph_;
 
@@ -34,7 +28,7 @@ namespace engine::render
             RenderContext(RenderContext&&) = delete;
             RenderContext& operator=(RenderContext&&) = delete;
 
-            bool Init();
+            bool Init(std::span<const RenderPassDescription> pipelineDescriptions);
 
             bool RebuildFrameGraph();
 

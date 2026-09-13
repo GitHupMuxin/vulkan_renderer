@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -24,6 +25,12 @@ namespace engine::resource
     {
         uint32_t index = UINT32_MAX;    // 资源池下标
         uint32_t generation = 0;        // 代际（防悬垂）
+    };
+
+    struct TextureHandle
+    {
+        uint32_t index = UINT32_MAX;
+        uint32_t generation = 0;
     };
 
     // 资源生命周期状态（类似进程控制块的状态）
@@ -58,6 +65,7 @@ namespace engine::resource
             std::vector<ResourceSlot<Model>>                modelSlots_;
             std::vector<ResourceSlot<EnvironmentCubeMap>>   envSlots_;
             std::vector<PendingDeletion>                    pendingDeletions_;
+            std::vector<ResourceSlot<Texture>>            textureSlots_;
 
             uint32_t                                        currentFrame_ = 0;
             uint32_t                                        frameCount_ = 2;
@@ -80,6 +88,8 @@ namespace engine::resource
             void                                            Init();          
             void                                            Cleanup();
 
+            const Texture*                                  GetTexture(TextureHandle handle) const noexcept;
+
             Model*                                          GetModel(ModelHandle handle);
             EnvironmentCubeMap*                             GetEnvironmentCubeMap(EnvironmentCubeMapHandle handle);
             // 语义：资源已注册且未失效。用于"分配 descriptor set / 生成 RenderItem"等
@@ -98,12 +108,9 @@ namespace engine::resource
             Texture2D*                                      GetEmptyTexture2D();
             Model*                                          GetSkybox();
 
+            // 加载阶段同步等待上传完成，返回可直接登记到 Registry 的 Handle。
+            TextureHandle                                   LoadTexture(const std::string& fileName, VkFormat format, VkImageViewType viewType);
             ModelHandle                                     LoadModel(const std::string& fileName);
-            EnvironmentCubeMapHandle                        LoadSkyBox(const std::string& fileName);
+            EnvironmentCubeMapHandle                        LoadEnvironment(const std::string& fileName);
     };
 }
-
-
-
-
-

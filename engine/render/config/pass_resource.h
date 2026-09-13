@@ -18,9 +18,8 @@ namespace engine::render
         MainCamera,
         SceneParam,
 
-        EnvironmentCube,
-        IrradianceMap,
-        PrefilteredMap,
+        // 整组环境资源；绑定时再选择其中的纹理。
+        Environment,
         BrdfLut,
         EuLut,
         EavgLut,
@@ -35,6 +34,20 @@ namespace engine::render
         MainColorMsaa,
         // 保留旧主 framebuffer 的单采样深度槽；目前并未执行 depth resolve。
         MainDepthSingleSample
+    };
+
+    enum class EnvironmentTexture
+    {
+        Source,
+        Irradiance,
+        Prefiltered
+    };
+
+    struct RenderResourceReference
+    {
+        RenderResourceId id_;
+        // Source：普通资源自身，或环境资源的源 Cubemap。
+        EnvironmentTexture environmentTexture_ = EnvironmentTexture::Source;
     };
 
     enum class RenderResourceLifetime
@@ -61,6 +74,15 @@ namespace engine::render
         // 当前只声明二维图像及 cubemap；Cube 要求 6 层和 cube-compatible 创建标记。
         VkImageViewType viewType_ = VK_IMAGE_VIEW_TYPE_2D;
         RenderImageInstancePolicy instancePolicy_ = RenderImageInstancePolicy::Single;
+        // nullptr 表示不从文件加载；非空路径相对 data 目录，由 Manager 加载并持有。
+        const char* path_ = nullptr;
+    };
+
+    // 描述一组环境资源：源 Cubemap，以及由它生成的 Irradiance、Prefiltered。
+    struct EnvironmentDescription
+    {
+        // 源 Cubemap 文件路径，相对 data 目录；nullptr 表示没有外部文件。
+        const char* path_ = nullptr;
     };
 
     struct RenderBufferDescription
@@ -74,7 +96,7 @@ namespace engine::render
         RenderResourceId id_;
         std::string_view name_;
         RenderResourceLifetime lifetime_;
-        std::variant<RenderImageDescription, RenderBufferDescription> description_;
+        std::variant<RenderImageDescription, RenderBufferDescription, EnvironmentDescription> description_;
     };
 
     // 返回进程期稳定的只读登记表；调用方不拥有底层存储。
@@ -101,7 +123,7 @@ namespace engine::render
     // Input 是 Pass 从外部读取的 descriptor 资源。
     struct PassInputResource
     {
-        RenderResourceId resource_;
+        RenderResourceReference resource_;
         PassResourceUsage usage_;
     };
 
@@ -128,22 +150,8 @@ namespace engine::render
     // 当前 Output 只有 framebuffer attachment；其他输出类型有需求时再扩展。
     struct PassOutputResource
     {
-        RenderResourceId resource_;
+        RenderResourceReference resource_;
+        PassResourceUsage usage_;
         std::variant<PassColorAttachment, PassDepthAttachment> attachment_;
     };
-
-    inline PassResourceUsage GetPassResourceUsage(const PassInputResource& input) noexcept
-    {
-        return input.usage_;
-    }
-
-    inline PassResourceUsage GetPassResourceUsage(const PassOutputResource& output) noexcept
-    {
-        if (std::holds_alternative<PassColorAttachment>(output.attachment_))
-        {
-            return {ResourceUsage::ColorAttachment, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        }
-
-        return {ResourceUsage::DepthAttachment, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    }
 }

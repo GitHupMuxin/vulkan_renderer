@@ -3,6 +3,7 @@
 #include "engine/core/staging_ring_allocator.h"
 #include "engine/core/descriptor_allocator.h"
 #include "engine/core/descriptor_layout_registry.h"
+#include "engine/render/config/default_render_pipeline.h"
 #include "engine/utils/log.h"
 
 
@@ -65,7 +66,7 @@ namespace app
         this->renderer_->Init(this->window_);
 
         this->renderContext_ = std::make_unique<engine::render::RenderContext>();
-        if (!this->renderContext_->Init())
+        if (!this->renderContext_->Init(engine::render::pipelineDescriptions_))
         {
             LOG_FATAL("Application: failed to initialize RenderContext.");
         }
@@ -74,10 +75,6 @@ namespace app
     void Application::PrepareFrame()
     {
         LOG_INFO("Application: Preparing frame...");
-        // 场景快照供资源上传和 Skybox descriptor 初始化使用。
-        engine::render::RenderScene initialScene = engine::scene::SceneExtractor::ExtractScene(this->scene_);
-        this->renderer_->SetRenderScene(initialScene);
-
         this->renderer_->PrepareFrame(*this->renderContext_);
         this->SetUpUI(this->renderer_->GetUIRenderPass());
         this->prepared_ = true;
@@ -107,7 +104,6 @@ namespace app
             "models/DamagedHelmet/glTF-Embedded/DamagedHelmet.gltf",
             "models/MetalRoughSpheres/glTF-Embedded/MetalRoughSpheres.gltf"
         };
-        desc.environmentPath = "environments/papermill.ktx";
 
         this->scene_.Init(desc);
     }

@@ -1,4 +1,5 @@
 #include "engine/render/renderer.h"
+#include "engine/render/config/shader_protocol.h"
 #include "engine/render/render_context.h"
 #include "engine/utils/log.h"
 #include "engine/resource/resource_manager.h"
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 
 namespace engine::render
 {
@@ -41,6 +43,9 @@ namespace engine::render
 					return std::holds_alternative<RenderBufferDescription>(resource.description_);
 
 				case ResourceUsage::SampledImage:
+					return std::holds_alternative<RenderImageDescription>(resource.description_) ||
+						std::holds_alternative<EnvironmentDescription>(resource.description_);
+
 				case ResourceUsage::ColorAttachment:
 				case ResourceUsage::DepthAttachment:
 					return std::holds_alternative<RenderImageDescription>(resource.description_);
@@ -132,7 +137,7 @@ namespace engine::render
         {
             const FrameGraphPassNode& node = frameGraph.GetNode(compiledPass.nodeId_);
             RenderPass* renderPass = node.renderPass_;
-            renderPass->Prepare(compiledPass, this->renderResources_, this->swapChain_, this->renderScenes_[0]);
+            renderPass->Prepare(compiledPass, this->renderResources_, this->swapChain_);
         }
         this->PrepareUI();
         LOG_INFO("Renderer: resources and render passes prepared.");
@@ -174,6 +179,22 @@ namespace engine::render
 	{
 		// 存入当前 frame-in-flight 的槽（与 UBO 双缓冲同步）
 		this->renderScenes_[this->frameIndex_] = renderScene;
+		this->UpdateFrameUniformData();
+
+        const FrameGraph& graph = this->renderContext_->GetFrameGraph();
+        for (const CompiledPass& compiledPass : graph.GetExecutionPlan().passes_)
+        {
+            RenderPass* pass = graph.GetNode(compiledPass.nodeId_).renderPass_;
+            const auto inputs = pass->GetInputResources();
+            // 这类图像随 acquire 结果选择实例，需要更新当前帧 Set 的资源指向。
+            const bool usesPerImageResource = std::any_of(inputs.begin(), inputs.end(), [](const auto& input) {
+                const auto* resource = FindRenderResourceDescription(input.resource_.id_);
+                const auto* image = resource ? std::get_if<RenderImageDescription>(&resource->description_) : nullptr;
+                return image && image->instancePolicy_ == RenderImageInstancePolicy::PerSwapchainImage;
+            });
+            if (usesPerImageResource)
+                pass->UpdateDescriptorSets(this->frameIndex_);
+        }
 	}
 
 	uint32_t Renderer::GetFrameIndex() const
@@ -201,12 +222,12 @@ namespace engine::render
                 {
                     for (const auto& passResource : resources)
                     {
-                        if (passResource.resource_ != resource.id_)
+                        if (passResource.resource_.id_ != resource.id_)
                         {
                             continue;
                         }
 
-                        switch (GetPassResourceUsage(passResource).type_)
+                        switch (passResource.usage_.type_)
                         {
                             case ResourceUsage::UniformBuffer: bufferUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; break;
                             case ResourceUsage::StorageBuffer: bufferUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; break;
@@ -253,6 +274,8 @@ namespace engine::render
                         break;
                 }
 
+                if ((imageUsage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
+                    this->renderResources_.CreateDefaultSampler();
                 this->CreateImage(imageResource, imageUsage);
             }
         }
@@ -326,16 +349,19 @@ namespace engine::render
 				for (size_t i = 0; i < resources.size(); ++i)
 				{
 					const auto& passResource = resources[i];
-					const PassResourceUsage usage = GetPassResourceUsage(passResource);
-					const auto descriptionIt = std::find_if(descriptions.begin(), descriptions.end(), [&passResource](const auto& entry){
-							return entry.id_ == passResource.resource_;
+					const PassResourceUsage usage = passResource.usage_;
+					const auto& reference = passResource.resource_;
+					const auto descriptionIt = std::find_if(descriptions.begin(), descriptions.end(), [&reference](const auto& entry){
+							return entry.id_ == reference.id_;
 						}
 					);
 					const RenderResourceDescription* description = descriptionIt != descriptions.end() ? &*descriptionIt : nullptr;
 
 					for (size_t j = 0; j < i; ++j)
 					{
-						if (resources[j].resource_ == passResource.resource_)
+						const auto& previous = resources[j].resource_;
+						if (previous.id_ == reference.id_ &&
+							previous.environmentTexture_ == reference.environmentTexture_)
 						{
 							LOG_ERROR(
 								"Pass resource declaration: " << renderPass->GetName()
@@ -351,10 +377,21 @@ namespace engine::render
 					{
 						LOG_ERROR(
 							"Pass resource declaration: " << renderPass->GetName()
-							<< " uses unregistered resource ID " << static_cast<uint32_t>(passResource.resource_) << "."
+							<< " uses unregistered resource ID " << static_cast<uint32_t>(reference.id_) << "."
 						);
 						valid = false;
 						continue;
+					}
+
+					const auto member = reference.environmentTexture_;
+					const bool validMember = member == EnvironmentTexture::Source ||
+						(std::holds_alternative<EnvironmentDescription>(description->description_) &&
+							(member == EnvironmentTexture::Irradiance || member == EnvironmentTexture::Prefiltered));
+					if (!validMember)
+					{
+						LOG_ERROR("Pass resource declaration: " << renderPass->GetName()
+							<< " selects an invalid texture member for " << description->name_ << ".");
+						valid = false;
 					}
 
 					if (!IsUsageCompatible(*description, usage.type_))
@@ -688,7 +725,7 @@ namespace engine::render
             RenderPass* renderPass = this->renderContext_->GetFrameGraph().GetNode(compiledPass.nodeId_).renderPass_;
             renderPass->DestroyFramebuffers();
         }
-        this->renderResources_.ClearImages();
+        this->renderResources_.ClearInternalImages();
 
         // Recreate swapchain (internally destroys old swapchain + image views)
         this->swapChain_.CreateSwapChain(&width, &height, this->rendererDescription_.vsync_);
@@ -814,6 +851,8 @@ namespace engine::render
 			"Renderer: Failed to reset fences."
 		);
 
+        this->renderResources_.SetCurrentImageIndex(this->imageIndex_);
+
 
 		vkResetCommandBuffer(frameContext.commandBuffer_, 0);
 
@@ -904,8 +943,7 @@ namespace engine::render
 
 			for (const CompiledResourceBarrier& compiledBarrier : compiledPass.barriersBefore_)
 			{
-				const auto& images = this->renderResources_.GetImages(compiledBarrier.resourceId_);
-				const uint32_t resourceImageIndex = images.size() == 1 ? 0 : this->imageIndex_;
+				const uint32_t resourceImageIndex = this->renderResources_.GetImageCount(compiledBarrier.resource_.id_) == 1 ? 0 : this->imageIndex_;
 
 				VkImageMemoryBarrier imageBarrier{};
 				imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -915,7 +953,7 @@ namespace engine::render
 				imageBarrier.newLayout = compiledBarrier.dstUsage_.requiredLayout_;
 				imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				imageBarrier.image = images[resourceImageIndex].image_;
+				imageBarrier.image = this->renderResources_.GetImage(compiledBarrier.resource_, resourceImageIndex).image_;
 				imageBarrier.subresourceRange.aspectMask =
 					compiledBarrier.dstUsage_.type_ == ResourceUsage::DepthAttachment
 					? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
@@ -950,7 +988,7 @@ namespace engine::render
 			renderPassBeginInfo.pClearValues = clearValues.data();
 
 			vkCmdBeginRenderPass(this->currentCB_, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-			renderPass->Execute(currentCB_, this->frameIndex_, this->imageIndex_, renderScene);
+			renderPass->Execute(currentCB_, this->frameIndex_, renderScene);
 			vkCmdEndRenderPass(this->currentCB_);
 
 			if (this->timestampQuerySupported_)
@@ -962,29 +1000,45 @@ namespace engine::render
 		}
 	}
 
-    void Renderer::UploadFrameUniformData()
+    void Renderer::UpdateFrameUniformData()
 	{
-		const RenderScene& rs = this->renderScenes_[this->frameIndex_];
+		const RenderScene& renderScene = this->renderScenes_[this->frameIndex_];
+		this->UpdateCameraUniformData(renderScene);
+		this->UpdateSceneParamUniformData(renderScene);
+	}
 
-		// 组装并上传 shader set=0 binding=0（UBO：projection/model/view/camPos）
-		UBOMatricesUpload matrices;
-		matrices.projection = rs.camera.projection;
-		matrices.model = rs.modelMatrix;
-		matrices.view = rs.camera.view;
-		matrices.camPos = rs.camera.position;
-		memcpy(this->renderResources_.GetBuffers(RenderResourceId::MainCamera)[this->frameIndex_].mapped, &matrices, sizeof(matrices));
+    void Renderer::UpdateCameraUniformData(const RenderScene& renderScene)
+	{
+		shader_protocol::CameraUniformData cameraData;
+		cameraData.projection = renderScene.camera.projection;
+		cameraData.model = renderScene.modelMatrix;
+		cameraData.view = renderScene.camera.view;
+		cameraData.camPos = renderScene.camera.position;
 
-		// 组装并上传 shader set=0 binding=1（UBOParams）
-		ParamsUpload params;
-		params.lightDir = glm::vec4(rs.light.direction, 0.0f);
-		params.exposure = rs.environment.exposure;
-		params.gamma = rs.environment.gamma;
-		params.prefilteredCubeMipLevels = rs.environment.prefilteredCubeMipLevels;
-		params.scaleIBLAmbient = rs.environment.scaleIBLAmbient;
-		params.debugViewInputs = rs.settings.debugViewInputs;
-		params.debugViewEquation = rs.settings.debugViewEquation;
-		params.debugBsdfType = rs.settings.debugBsdfType;
-		memcpy(this->renderResources_.GetBuffers(RenderResourceId::SceneParam)[this->frameIndex_].mapped, &params, sizeof(params));
+		this->WriteFrameUniformBuffer(RenderResourceId::MainCamera, &cameraData, sizeof(cameraData));
+	}
+
+    void Renderer::UpdateSceneParamUniformData(const RenderScene& renderScene)
+	{
+		shader_protocol::SceneParamUniformData params;
+		params.lightDir = glm::vec4(renderScene.light.direction, 0.0f);
+		params.exposure = renderScene.environment.exposure;
+		params.gamma = renderScene.environment.gamma;
+		params.prefilteredCubeMipLevels = static_cast<float>(
+			this->renderResources_.GetPrefilteredCubeMipLevels(RenderResourceId::Environment)
+		);
+		params.scaleIBLAmbient = renderScene.environment.scaleIBLAmbient;
+		params.debugViewInputs = renderScene.settings.debugViewInputs;
+		params.debugViewEquation = renderScene.settings.debugViewEquation;
+		params.debugBSDFType = renderScene.settings.debugBsdfType;
+
+		this->WriteFrameUniformBuffer(RenderResourceId::SceneParam, &params, sizeof(params));
+	}
+
+    void Renderer::WriteFrameUniformBuffer(RenderResourceId resourceId, const void* data, VkDeviceSize size)
+	{
+		auto& buffer = this->renderResources_.GetBuffers(resourceId)[this->frameIndex_];
+		std::memcpy(buffer.mapped, data, static_cast<size_t>(size));
 	}
 
 	void Renderer::EndFrame()
@@ -1002,8 +1056,6 @@ namespace engine::render
 			vkEndCommandBuffer(this->currentCB_) == VK_SUCCESS,
 			"Renderer: Failed to end command buffer."
 		);
-
-		this->UploadFrameUniformData();
 
 		const VkPipelineStageFlags waitDstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		VkSubmitInfo submitInfo{};
@@ -1163,6 +1215,3 @@ namespace engine::render
 		this->frameContexts_.clear();
 	}
 }
-
-
-

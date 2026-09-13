@@ -10,8 +10,5 @@ namespace engine::scene
     {
         // 场景模型（相对 data/ 的路径），每个路径加载为一个 SceneObject
         std::vector<std::string> modelPaths;
-
-        // 环境贴图（.ktx），为空则场景不使用 IBL
-        std::string environmentPath;
     };
 }

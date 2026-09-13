@@ -27,10 +27,9 @@ namespace engine::render
 
     FrameGraphNodeId FrameGraph::AddPassNode(std::string_view name, RenderPass* renderPass)
     {
-        static FrameGraphNodeId nextNodeId = 0;
-
+        // Node ID 仅在本次建图内有效；排序使用从 0 开始的连续编号。
         FrameGraphPassNode node;
-        node.nodeId_ = nextNodeId++;
+        node.nodeId_ = static_cast<FrameGraphNodeId>(this->nodes_.size());
         node.name_ = std::string(name);
         node.renderPass_ = renderPass;
         this->nodes_.insert({node.nodeId_, std::move(node)});

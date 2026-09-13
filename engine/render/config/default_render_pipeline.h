@@ -3,7 +3,7 @@
 #include <span>
 
 #include "engine/core/config/schema.h"
-#include "engine/render/render_pass_description.h"
+#include "engine/render/render_pipeline_description.h"
 
 namespace engine::render
 {
@@ -198,9 +198,15 @@ namespace engine::render
         }
     }
 
-    inline const std::vector<RenderPassDescription> pipelineDescriptions_ = {
-        MakeSkyboxPass(),
-        MakePbrPass(),
-        MakeToneMappingPass()
+    inline const RenderPipelineDescription defaultPipeline_ = {
+        .passes_ = {
+            MakeSkyboxPass(),
+            MakePbrPass(),
+            MakeToneMappingPass()
+        },
+        .dependencies_ = {
+            {"SkyBoxRenderPass", "PBRRenderPass", {RenderResourceId::SceneColorHdr}},
+            {"PBRRenderPass", "ToneMappingRenderPass", {RenderResourceId::SceneColorHdr}}
+        }
     };
 }

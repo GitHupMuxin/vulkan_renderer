@@ -81,6 +81,7 @@ set(ENGINE_RENDER_HEADERS
     "render/config/default_render_pipeline.h"
     "render/config/graphics_pipeline_defaults.h"
     "render/render_pass_description.h"
+    "render/render_pipeline_description.h"
 "render/render_image.h"
     "render/config/pass_resource.h"
     "render/frame_graph.h"

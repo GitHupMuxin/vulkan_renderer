@@ -66,7 +66,7 @@ namespace app
         this->renderer_->Init(this->window_);
 
         this->renderContext_ = std::make_unique<engine::render::RenderContext>();
-        if (!this->renderContext_->Init(engine::render::pipelineDescriptions_))
+        if (!this->renderContext_->Init(engine::render::defaultPipeline_))
         {
             LOG_FATAL("Application: failed to initialize RenderContext.");
         }

@@ -79,6 +79,7 @@ namespace engine::render
             bool HasNode(FrameGraphNodeId nodeId) const noexcept;
             bool BuildExecutionPlan();
         public:
+            // Reset 后旧 Node ID 失效；新一轮建图从 0 连续编号。
             void Reset();
 
             FrameGraphNodeId AddPassNode(std::string_view name, RenderPass* renderPass);

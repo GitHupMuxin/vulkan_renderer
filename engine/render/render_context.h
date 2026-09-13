@@ -7,14 +7,14 @@
 #include "engine/render/frame_graph.h"
 #include "engine/render/config/pass_resource.h"
 #include "engine/render/render_pass.h"
-#include "engine/render/render_pass_description.h"
+#include "engine/render/render_pipeline_description.h"
 
 namespace engine::render
 {
     class RenderContext
     {
         private:
-            std::vector<RenderPassDescription>         pipelineDescriptions_;
+            RenderPipelineDescription                pipelineDescription_;
             std::vector<std::unique_ptr<RenderPass>>   renderPasses_;
             std::span<const RenderResourceDescription> resourceDescriptions_ = GetRenderResourceDescriptions();
             FrameGraph frameGraph_;
@@ -28,7 +28,7 @@ namespace engine::render
             RenderContext(RenderContext&&) = delete;
             RenderContext& operator=(RenderContext&&) = delete;
 
-            bool Init(std::span<const RenderPassDescription> pipelineDescriptions);
+            bool Init(const RenderPipelineDescription& pipelineDescription);
 
             bool RebuildFrameGraph();
 

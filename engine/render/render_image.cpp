@@ -12,10 +12,14 @@ namespace engine::render
         : image_(other.image_)
         , imageView_(other.imageView_)
         , memory_(other.memory_)
+        , currentLayout_(other.currentLayout_)
+        , aspectMask_(other.aspectMask_)
     {
         other.image_ = VK_NULL_HANDLE;
         other.imageView_ = VK_NULL_HANDLE;
         other.memory_ = VK_NULL_HANDLE;
+        other.currentLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+        other.aspectMask_ = 0;
     }
 
     RenderImage& RenderImage::operator=(RenderImage&& other) noexcept
@@ -25,15 +29,21 @@ namespace engine::render
             this->image_ = other.image_;
             this->imageView_ = other.imageView_;
             this->memory_ = other.memory_;
+            this->currentLayout_ = other.currentLayout_;
+            this->aspectMask_ = other.aspectMask_;
             other.image_ = VK_NULL_HANDLE;
             other.imageView_ = VK_NULL_HANDLE;
             other.memory_ = VK_NULL_HANDLE;
+            other.currentLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+            other.aspectMask_ = 0;
         }
         return *this;
     }
 
     void RenderImage::Destroy()
     {
+        this->currentLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+        this->aspectMask_ = 0;
         auto& device = core::Device::Instance();
         if (imageView_ != VK_NULL_HANDLE) {
             vkDestroyImageView(device.GetLogicalDeviceHandle(), imageView_, nullptr);

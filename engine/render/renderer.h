@@ -79,6 +79,7 @@ namespace engine::render
             // 对接 UI 的 GPU 计时结果；query pool 属于 FrameContext。
             float                                       timestampPeriod_ = 0.0f;
             bool                                        timestampQuerySupported_ = false;
+            uint32_t                                    gpuQueryCount_ = 0;
             GpuTimings                                  lastGpuTimings_;
 
             // Context / 资源：校验声明，创建和释放 Renderer 持有的 GPU 资源。

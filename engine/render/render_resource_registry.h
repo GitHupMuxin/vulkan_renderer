@@ -44,6 +44,8 @@ namespace engine::render
 
             // Internal resources are owned here. An ID cannot have two owners/types.
             std::vector<RenderImage>& GetOrCreateImages(RenderResourceId id);
+            // 访问已创建的内部 Image，用于执行时维护布局；不隐式创建资源。
+            RenderImage& GetInternalImage(RenderResourceId id, uint32_t index = 0);
             std::vector<core::Buffer>& GetOrCreateBuffers(RenderResourceId id);
             // Imports a Manager-owned texture without taking ownership.
             void ImportImage(RenderResourceId id, resource::TextureHandle handle);

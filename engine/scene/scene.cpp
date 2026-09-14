@@ -12,22 +12,6 @@ namespace engine::scene
         LOG_INFO("Scene: start to init scene...");
 
         this->LoadAsset(desc);
-
-        // Handle 失效自检：加载一个临时模型 → 释放 → 应返回 nullptr。
-        // 纯 CPU 操作，不进入渲染热路径，不碰场景已有资源。
-        {
-            auto& rm = resource::ResourceManager::Instance();
-            resource::ModelHandle probe = rm.LoadModel(rm.assetPath_ + "models/Box/glTF-Embedded/Box.gltf");
-            rm.ReleaseModel(probe);
-            if (rm.GetModel(probe) == nullptr)
-            {
-                LOG_INFO("Resource handle invalidation self-check PASSED");
-            }
-            else
-            {
-                LOG_ERROR("Resource handle invalidation self-check FAILED");
-            }
-        }
     }
 
     void Scene::LoadAsset(const SceneDescription& desc)
@@ -99,7 +83,6 @@ namespace engine::scene
     
 
 } 
-
 
 
 

@@ -15,9 +15,6 @@
 namespace engine::render
 {
 
-	// 每帧 timestamp 查询槽位数：[0]=FrameStart + 每个 Pass 2 个（开始/结束），预留 8 个 Pass 的容量
-	constexpr uint32_t kGpuQueryCount = 1 + 8 * 2;
-
 	namespace
 	{
 		std::string_view GetResourceUsageName(ResourceUsage usage) noexcept
@@ -131,6 +128,8 @@ namespace engine::render
             LOG_FATAL("Renderer: pass resource declaration validation failed.");
         }
 
+        // 此时执行计划已确定，帧上下文的 query pool 按保留的 Pass 数量分配。
+        this->CreateFrameContexts();
         this->CreateResources();
         const FrameGraph& frameGraph = this->renderContext_->GetFrameGraph();
         for (const CompiledPass& compiledPass : frameGraph.GetExecutionPlan().passes_)
@@ -170,7 +169,6 @@ namespace engine::render
         this->InitCommandPool();
         PipelineCache::Instance().Init();
         this->CreateSyncObjects();
-		this->CreateFrameContexts();
 		this->renderScenes_.resize(this->frameCount_);
     }
 
@@ -432,6 +430,8 @@ namespace engine::render
 
     void Renderer::CreateFrameContexts()
     {
+		// [0] 为帧起点，每个实际执行的 Pass 占两个时间戳槽位。
+		this->gpuQueryCount_ = 1 + static_cast<uint32_t>(this->renderContext_->GetFrameGraph().GetExecutionPlan().passes_.size()) * 2;
 		LOG_INFO("Renderer: start to create frame contexts...");
         this->frameContexts_.resize(this->frameCount_);
 
@@ -467,7 +467,7 @@ namespace engine::render
 				VkQueryPoolCreateInfo queryPoolCI{};
 				queryPoolCI.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
 				queryPoolCI.queryType = VK_QUERY_TYPE_TIMESTAMP;
-				queryPoolCI.queryCount = kGpuQueryCount;
+				queryPoolCI.queryCount = this->gpuQueryCount_;
 				SUCCESS_OR_LOG(
 					vkCreateQueryPool(core::Device::Instance().GetLogicalDeviceHandle(), &queryPoolCI, nullptr, &frameContexts_[i].queryPool_) == VK_SUCCESS,
 					"Failed to create query pool"
@@ -541,6 +541,7 @@ namespace engine::render
         for (uint32_t i = 0; i < images.size(); ++i)
         {
             auto& image = images[i];
+            image.aspectMask_ = aspect;
             SUCCESS_OR_LOG(
                 vkCreateImage(device.GetLogicalDeviceHandle(), &imageCI, nullptr, &image.image_) == VK_SUCCESS,
                 "Failed to create render image"
@@ -801,30 +802,37 @@ namespace engine::render
 		// 第一帧（或该 FrameContext 尚未提交过）时 query 从未被 reset，必须跳过读取
 		if (this->timestampQuerySupported_ && frameContext.hasSubmittedFrame_)
 		{
-			// 只读取实际写入的 query（FrameStart 1 个 + 每个 Pass 2 个），不要读取预留但未写入的槽位
-			const auto passCount = this->renderContext_->GetFrameGraph().GetExecutionPlan().passes_.size();
-			const uint32_t queryCountToRead = std::min<uint32_t>(kGpuQueryCount, 1 + static_cast<uint32_t>(passCount) * 2);
-			uint64_t timestamps[kGpuQueryCount] = {};
+			const auto& graph = this->renderContext_->GetFrameGraph();
+			const auto& passes = graph.GetExecutionPlan().passes_;
+			std::vector<uint64_t> timestamps(this->gpuQueryCount_);
 			VkResult queryResult = vkGetQueryPoolResults(
 				device.GetLogicalDeviceHandle(),
 				frameContext.queryPool_,
 				0,
-				queryCountToRead,
-				sizeof(timestamps),
-				timestamps,
+				this->gpuQueryCount_,
+				timestamps.size() * sizeof(uint64_t),
+				timestamps.data(),
 				sizeof(uint64_t),
 				VK_QUERY_RESULT_64_BIT
 			);
 
 			// 布局：[0]=FrameStart [1]=Pass0开始 [2]=Pass0结束 [3]=Pass1开始 [4]=Pass1结束 ...
 			// 帧总耗时 = 最后一个 Pass 结束 - 帧开始；单个 Pass 耗时 = 结束 - 开始
-			if (queryResult == VK_SUCCESS && timestamps[queryCountToRead - 1] > timestamps[0])
+			if (queryResult == VK_SUCCESS && timestamps.back() > timestamps[0])
 			{
 				const float periodNs = this->timestampPeriod_;
-				const uint64_t frameEnd = timestamps[queryCountToRead - 1];
+				const uint64_t frameEnd = timestamps.back();
 				this->lastGpuTimings_.frameTotalMs = static_cast<float>(frameEnd - timestamps[0]) * periodNs / 1000000.0f;
-				this->lastGpuTimings_.skyboxMs    = static_cast<float>(timestamps[2] - timestamps[1]) * periodNs / 1000000.0f;
-				this->lastGpuTimings_.pbrMs       = static_cast<float>(timestamps[4] - timestamps[3]) * periodNs / 1000000.0f;
+				// 剔除或调整顺序后槽位会变化，按实际 Pass 名称对应现有 UI 计时项。
+				this->lastGpuTimings_.skyboxMs = 0.0f;
+				this->lastGpuTimings_.pbrMs = 0.0f;
+				for (size_t i = 0; i < passes.size(); ++i)
+				{
+					const auto name = graph.GetNode(passes[i].nodeId_).renderPass_->GetName();
+					const float elapsedMs = static_cast<float>(timestamps[2 + i * 2] - timestamps[1 + i * 2]) * periodNs / 1000000.0f;
+					if (name == "SkyBoxRenderPass") this->lastGpuTimings_.skyboxMs = elapsedMs;
+					if (name == "PBRRenderPass") this->lastGpuTimings_.pbrMs = elapsedMs;
+				}
 				this->lastGpuTimings_.valid       = true;
 			}
 		}
@@ -866,7 +874,7 @@ namespace engine::render
 		// vkCmdResetQueryPool 禁止在 render pass 内部调用（VUID-vkCmdResetQueryPool-renderpass），必须放在 BeginRenderPass 之前
 		if (this->timestampQuerySupported_)
 		{
-			vkCmdResetQueryPool(this->currentCB_, frameContext.queryPool_, 0, kGpuQueryCount);
+			vkCmdResetQueryPool(this->currentCB_, frameContext.queryPool_, 0, this->gpuQueryCount_);
 		}
 
 		static auto beginLabel = core::Device::Instance().GetCmdBeginDebugUtilsLabel();
@@ -944,19 +952,18 @@ namespace engine::render
 			for (const CompiledResourceBarrier& compiledBarrier : compiledPass.barriersBefore_)
 			{
 				const uint32_t resourceImageIndex = this->renderResources_.GetImageCount(compiledBarrier.resource_.id_) == 1 ? 0 : this->imageIndex_;
+				auto& image = this->renderResources_.GetInternalImage(compiledBarrier.resource_.id_, resourceImageIndex);
 
 				VkImageMemoryBarrier imageBarrier{};
 				imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 				imageBarrier.srcAccessMask = GetAccessMask(compiledBarrier.srcUsage_, true);
 				imageBarrier.dstAccessMask = GetAccessMask(compiledBarrier.dstUsage_, false);
-				imageBarrier.oldLayout = compiledBarrier.srcUsage_.requiredLayout_;
+				imageBarrier.oldLayout = image.currentLayout_;
 				imageBarrier.newLayout = compiledBarrier.dstUsage_.requiredLayout_;
 				imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				imageBarrier.image = this->renderResources_.GetImage(compiledBarrier.resource_, resourceImageIndex).image_;
-				imageBarrier.subresourceRange.aspectMask =
-					compiledBarrier.dstUsage_.type_ == ResourceUsage::DepthAttachment
-					? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+				imageBarrier.image = image.image_;
+				imageBarrier.subresourceRange.aspectMask = image.aspectMask_;
 				imageBarrier.subresourceRange.baseMipLevel = 0;
 				imageBarrier.subresourceRange.levelCount = 1;
 				imageBarrier.subresourceRange.baseArrayLayer = 0;
@@ -971,6 +978,7 @@ namespace engine::render
 					0, nullptr,
 					1, &imageBarrier
 				);
+				image.currentLayout_ = imageBarrier.newLayout;
 			}
 
 			if (this->timestampQuerySupported_)
@@ -991,6 +999,18 @@ namespace engine::render
 			renderPass->Execute(currentCB_, this->frameIndex_, renderScene);
 			vkCmdEndRenderPass(this->currentCB_);
 
+			// RenderPass 的隐式转换也会改变布局，记录附件实际配置的 finalLayout。
+			for (const auto& output : renderPass->GetOutputResources())
+			{
+				// BackBuffer 属于 Swapchain，不在 Registry 的内部 Image 中。
+				if (output.resource_.id_ == RenderResourceId::BackBuffer) continue;
+				const uint32_t resourceImageIndex = this->renderResources_.GetImageCount(output.resource_.id_) == 1 ? 0 : this->imageIndex_;
+				auto& image = this->renderResources_.GetInternalImage(output.resource_.id_, resourceImageIndex);
+				image.currentLayout_ = std::visit([](const auto& attachment) {
+					return attachment.finalLayout_;
+				}, output.attachment_);
+			}
+
 			if (this->timestampQuerySupported_)
 			{
 				// 每个 Pass 消耗 2 个 query：[n]=开始 [n+1]=结束
@@ -1003,8 +1023,15 @@ namespace engine::render
     void Renderer::UpdateFrameUniformData()
 	{
 		const RenderScene& renderScene = this->renderScenes_[this->frameIndex_];
-		this->UpdateCameraUniformData(renderScene);
-		this->UpdateSceneParamUniformData(renderScene);
+		// Pass 剔除后，对应 Buffer 可能未创建；只更新 Registry 中已存在的资源。
+		if (this->renderResources_.HasBuffers(RenderResourceId::MainCamera))
+		{
+			this->UpdateCameraUniformData(renderScene);
+		}
+		if (this->renderResources_.HasBuffers(RenderResourceId::SceneParam))
+		{
+			this->UpdateSceneParamUniformData(renderScene);
+		}
 	}
 
     void Renderer::UpdateCameraUniformData(const RenderScene& renderScene)

@@ -13,6 +13,10 @@ namespace engine::render
             VkImage         image_ = VK_NULL_HANDLE;
             VkImageView     imageView_ = VK_NULL_HANDLE;
             VkDeviceMemory  memory_ = VK_NULL_HANDLE;
+            // 按命令录制顺序维护的布局；不是 GPU 即时状态查询。
+            VkImageLayout   currentLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+            // 由图像格式确定，采样等使用方式不会改变它。
+            VkImageAspectFlags aspectMask_ = 0;
 
             RenderImage() = default;
             ~RenderImage();

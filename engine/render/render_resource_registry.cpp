@@ -80,6 +80,11 @@ namespace engine::render
         return this->imageResources_[id];
     }
 
+    RenderImage& RenderResourceRegistry::GetInternalImage(RenderResourceId id, uint32_t index)
+    {
+        return this->imageResources_.at(id).at(index);
+    }
+
     std::vector<core::Buffer>& RenderResourceRegistry::GetOrCreateBuffers(RenderResourceId id)
     {
         if (this->HasImages(id))

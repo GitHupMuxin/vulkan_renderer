@@ -72,6 +72,7 @@ namespace engine::render
         private:
             std::unordered_map<FrameGraphNodeId, FrameGraphPassNode> nodes_;
             std::unordered_map<FrameGraphNodeId, std::vector<FrameGraphEdgeDependency>> nodeDependencies_;
+            std::vector<FrameGraphNodeId> outputNodeIds_;
             FrameGraphExecutionPlan executionPlan_;
 
             bool needsRebuild_ = true;
@@ -86,6 +87,9 @@ namespace engine::render
 
             // 按照 src -> dst 的方向，将显式依赖保存到源 Node 的出边表。
             void AddDependency(FrameGraphNodeId sourceNodeId, FrameGraphNodeId destinationNodeId, RenderResourceReference resource);
+
+            // 输出节点及其所有祖先进入执行计划；ID 必须来自当前图，列表不能为空。
+            void SetOutputNodes(std::span<const FrameGraphNodeId> nodeIds);
 
             // 显式重构 Edge 和 ExecutionPlan；没有变化时直接返回已有结果。
             bool Rebuild();

@@ -207,6 +207,7 @@ namespace engine::render
         .dependencies_ = {
             {"SkyBoxRenderPass", "PBRRenderPass", {RenderResourceId::SceneColorHdr}},
             {"PBRRenderPass", "ToneMappingRenderPass", {RenderResourceId::SceneColorHdr}}
-        }
+        },
+        .outputPasses_ = {"ToneMappingRenderPass"}
     };
 }

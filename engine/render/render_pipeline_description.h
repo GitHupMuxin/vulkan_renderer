@@ -20,5 +20,7 @@ namespace engine::render
         // Pass 的 name_ 在管线内必须非空且唯一。
         std::vector<RenderPassDescription> passes_;
         std::vector<PassDependencyDescription> dependencies_;
+        // 最终输出节点的 name_，作为反向追踪依赖时的保留起点。
+        std::vector<std::string_view> outputPasses_;
     };
 }

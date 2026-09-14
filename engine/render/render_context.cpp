@@ -79,6 +79,16 @@ namespace engine::render
             }
         }
 
+        for (const auto name : this->pipelineDescription_.outputPasses_)
+        {
+            // 输出名称必须对应已配置的 Pass，避免漏标起点后误剔除其依赖链。
+            if (!passIndices.contains(name))
+            {
+                LOG_ERROR("RenderContext: output references an unknown pass: " << name);
+                return false;
+            }
+        }
+
         std::vector<FrameGraphNodeId> nodeIds;
         nodeIds.reserve(this->renderPasses_.size());
         for (RenderPassIndex index = 0; index < this->renderPasses_.size(); ++index)
@@ -105,6 +115,14 @@ namespace engine::render
                 dependency.resource_
             );
         }
+
+        std::vector<FrameGraphNodeId> outputNodeIds;
+        outputNodeIds.reserve(this->pipelineDescription_.outputPasses_.size());
+        for (const auto name : this->pipelineDescription_.outputPasses_)
+        {
+            outputNodeIds.push_back(nodeIds[passIndices.at(name)]);
+        }
+        this->frameGraph_.SetOutputNodes(outputNodeIds);
 
         return this->frameGraph_.Rebuild();
     }

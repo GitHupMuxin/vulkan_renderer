@@ -6,10 +6,10 @@
 
 - 实际仓库：`E:\vulkanProject\Vulkan-glTF-PBR-master\vulkan_pbr`。
 - 全局协作规则：[E:\Agents\AGENTS.md](E:/Agents/AGENTS.md)，新会话开始时先读取。
-- 稳定分支：`main`；本阶段稳定标记：`7D`，具体提交以该 tag 指向为准。
-- 上一稳定点：`d91cc8e feat(7c): build render passes from pipeline descriptions`，tag `7C`。
-- 当前完成阶段：Stage 7D，管线依赖配置化与图内 Node ID 重建。
-- Stage 7D 已通过构建、配置测试和运行日志验收，用户已确认画面正常；下一阶段范围尚未确认。
+- 稳定分支：`main`；本阶段稳定标记：`7E`，具体提交以该 tag 指向为准。
+- 上一稳定点：`e51bd68 feat(7d): configure render pipeline dependencies`，tag `7D`。
+- 当前完成阶段：Stage 7E，输出节点配置与 Pass 剔除。
+- Stage 7E 已通过构建、30 项配置测试和运行日志验证，用户已确认阶段完成；下一阶段范围尚未确定。
 
 新任务先读取全局协作规则，再核对 Git 与代码并阅读本文。协作习惯统一维护在全局文件，本文记录项目状态与已确认的技术边界。
 
@@ -32,6 +32,7 @@
 | Stage 7B | HDR SceneColor、ToneMapping、跨 Pass 同步与 UI 输出 | `7b` |
 | Stage 7C | 配置驱动资源绑定、公共 Descriptor/Pipeline 构建和 Execute | `7C` |
 | Stage 7D | 管线依赖配置化、连接校验和图内 Node ID 重建 | `7D` |
+| Stage 7E | 输出节点配置、反向祖先标记和 Pass 剔除 | `7E` |
 
 ## 已确认的方向与阶段边界
 
@@ -45,7 +46,7 @@
 |---|---|
 | Scene、Renderer、RenderContext、UI | Application 持有，组织初始化和帧循环 |
 | Pass 描述、公共 RenderPass 实例、FrameGraph | RenderContext 持有；明确组织节点和依赖 |
-| 节点、显式边、编译执行计划 | FrameGraph 持有；节点借用 RenderPass 指针 |
+| 节点、显式边、输出节点 ID、编译执行计划 | FrameGraph 持有；节点借用 RenderPass 指针 |
 | Swapchain、FrameContext、RenderResourceRegistry、UI render target | Renderer 持有，负责创建资源、录制、同步和提交 |
 | 内部 image/buffer、默认 sampler | Registry 持有；导入的外部资产只保存 Manager handle |
 | Model、普通 Texture、EnvironmentCubeMap | ResourceManager 持有，handle 使用 index + generation |
@@ -125,13 +126,22 @@ EndFrame()        → 提交与呈现
 - `cmake --build --preset gcc-ninja` 成功；16 项临时配置测试通过，覆盖默认同步、调换 Pass 排列、重复建图、独立 Context、不同节点数量、非法名称/资源/循环依赖和失败后恢复。
 - 最终代码重新构建并通过 16 项配置测试；默认程序进入渲染循环运行 5 秒后正常退出，退出码 0，Validation/错误日志 0、stderr 为空，`git diff --check` 通过。用户已检查画面并确认正常。仍有既有 staging ring warning 和第三方 gli 编译 warning。
 
+## Stage 7E 完成内容与验收（2026-09-14）
+
+- `RenderPipelineDescription::outputPasses_` 配置最终输出 Pass 名称，默认是 `ToneMappingRenderPass`；Context 校验名称并解析为 Node ID，通过 `SetOutputNodes()` 交给 FrameGraph。
+- FrameGraph 拒绝空输出列表和不存在的输出 ID；完整图先做拓扑排序与循环检查，再从输出沿入边标记祖先、过滤执行顺序，仅为保留节点生成执行计划和同步信息。未使用分支中的循环依赖仍报错。
+- 剔除逻辑前后有中文分隔注释；剔除不删除原始节点或 edge，不改变 Node ID。多个输出可共享祖先；Reset 清空输出起点。
+- Renderer 既有资源准备与执行链路继续读取执行计划，被剔除节点不进行 Pass::Prepare/Execute；UI 仍在图外。没有新增运行时热重建或副作用自动识别机制，必须执行的节点应由配置列入输出起点。
+- 构建成功；30 项临时配置测试通过，覆盖默认同步、无用节点与整条分支、多输出共享祖先、重复输出、保留节点 ID、重复建图、空/未知输出、未使用分支中的错误及失败恢复。
+- 默认程序运行渲染循环约 5 秒并正常退出，退出码 0；日志确认保留 3/3 节点、剔除 0 节点，Validation/错误日志 0、stderr 为空。`git diff --check` 通过；仅有既有 staging ring 和 gli warning。本次未重新检查画面。
+
 ## 已知边界与待讨论项
 
 1. Dependency 现由 RenderPipelineDescription 显式配置来源 Pass 名称、目标 Pass 名称和资源，Context 按名称解析 Node ID；不从 Input/Output 自动推导。Node ID 仅在本次建图内有效，Reset 后从 0 重新编号。尚未实现端口连接、资源来源解析或已准备 GPU 资源后的运行时热重建。
 2. 绘制类型、Set 0/1/2/3 分工、材质变体映射和 push constant 格式目前固定。Scene draw 推送 mesh/material 索引，Fullscreen 当前推送 exposure；不是任意 Shader 协议。
 3. Camera/SceneParam 的 CPU 语义组装和 C++/GLSL 格式对应仍人工维护；反射、自定义参数系统见 `SHADER_PARAMETER_PROTOCOL.md`，本阶段不继续展开。
 4. 外部纹理热替换尚无通用 descriptor dirty 跟踪；材质混合特性组合、跨材质对象的 descriptor 去重暂未实现。
-5. UI 仍在 Graph 外；MSAA 关闭；尚无资源别名、Pass culling、自动生命周期分析和 async compute。
+5. UI 仍在 Graph 外；MSAA 关闭；已实现基于显式输出节点的 Pass culling，尚无资源别名、自动生命周期分析和 async compute。
 6. Descriptor 与 staging 单例目前按主线程使用；后台资源线程需要另行明确同步边界。
 
-下一次继续时以 7D 稳定点和这些已确认边界为准，先讨论下一项框架需求，不重复开展已经完成的 7C/7D，也不自动开始蓝图、反射或材质效果完善。
+下一次继续时以 7E 稳定点和这些已确认边界为准，先讨论下一项框架需求，不重复开展已经完成的 7C/7D/7E，也不自动开始蓝图、反射或材质效果完善。

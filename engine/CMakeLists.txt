@@ -36,12 +36,15 @@ set(ENGINE_CORE_HEADERS
 # --- Resource ---
 set(ENGINE_RESOURCE_SRC
     "resource/environment_lighting.cpp"
+    "resource/model_data.cpp"
     "resource/model.cpp"
     "resource/resource_manager.cpp"
     "resource/texture.cpp"
 )
 set(ENGINE_RESOURCE_HEADERS
+    "resource/aabb.h"
     "resource/environment_lighting.h"
+    "resource/model_data.h"
     "resource/model.h"
     "resource/resource_manager.h"
     "resource/texture.h"

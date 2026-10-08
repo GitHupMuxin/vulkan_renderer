@@ -1,15 +1,17 @@
 # Vulkan PBR 项目当前状态
 
-最后更新：2026-09-14
+最后更新：2026-10-08
 
 ## 快速定位
 
 - 实际仓库：`E:\vulkanProject\Vulkan-glTF-PBR-master\vulkan_pbr`。
 - 全局协作规则：[E:\Agents\AGENTS.md](E:/Agents/AGENTS.md)，新会话开始时先读取。
-- 稳定分支：`main`；本阶段稳定标记：`7E`，具体提交以该 tag 指向为准。
-- 上一稳定点：`e51bd68 feat(7d): configure render pipeline dependencies`，tag `7D`。
-- 当前完成阶段：Stage 7E，输出节点配置与 Pass 剔除。
-- Stage 7E 已通过构建、30 项配置测试和运行日志验证，用户已确认阶段完成；下一阶段范围尚未确定。
+- 稳定分支：`main`；最后稳定实现提交为 `2a3bcd5 feat(8b): connect static models to scene rendering`，已推送至 `origin/main`。进度文档提交可以跟随该实现提交。
+- 上一已标记稳定点：`31b093b feat(8a): add CPU model data and validation`，tag `8A`；本次未创建新 tag。
+- 当前完成阶段：Stage 8B，ModelData 转运行时 Model，以及默认静态模型的 Scene/RenderItem/绘制端接入；不代表候选 Stage 8F/8G 的完整能力已完成。
+- Stage 7E 已通过构建、30 项配置测试和运行日志验证，用户已确认阶段完成。
+- 当前主线是资产导入；`AssetLoader → ModelData → Model → Scene/RenderItem → RenderPass` 已接入默认场景路径并提交。构建、Scene 集成用例和运行日志验证已通过，用户已实际运行并同意结束本段。
+- 下个窗口先读取本文并核对 Git。建议讨论的下一项实验是同一 Model 添加两个 SceneObject，打通各对象独立变换的实际绘制；尚未授权实施，不自动展开 FBX 或其他能力。
 
 新任务先读取全局协作规则，再核对 Git 与代码并阅读本文。协作习惯统一维护在全局文件，本文记录项目状态与已确认的技术边界。
 
@@ -33,12 +35,46 @@
 | Stage 7C | 配置驱动资源绑定、公共 Descriptor/Pipeline 构建和 Execute | `7C` |
 | Stage 7D | 管线依赖配置化、连接校验和图内 Node ID 重建 | `7D` |
 | Stage 7E | 输出节点配置、反向祖先标记和 Pass 剔除 | `7E` |
+| Stage 8A | ModelData/MeshData/NodeData、Mesh 局部 AABB 与纯 CPU 校验 | `31b093b`，tag `8A` |
+| Stage 8B | 运行时 Model、共享 MeshResource、glTF 导入新数据层、静态 Scene/Item 与绘制端接入 | `2a3bcd5`，未创建 tag |
 
 ## 已确认的方向与阶段边界
 
 主线是渲染框架搭建。长期希望通过蓝图组织节点，在节点中配置 graphics pipeline 和 shader；目前没有要求实现蓝图编辑器、外部配置解析或 Shader 反射。
 
 当前默认 Skybox → PBR → ToneMapping 管线用于验证框架。Stage 7C 已打通“描述 → 资源准备 → Descriptor/Pipeline 构建 → Execute”，不继续把默认 PBR 的材质效果细化当作本阶段任务。实验工具的价值是降低添加节点、替换 shader 和验证渲染想法的成本，不承诺跨引擎迁移整条管线。
+
+## 后续推进共识（2026-09-17）
+
+遵循 [全局协作准则](E:/Agents/AGENTS.md) 中的“需求与架构共同演进”。以现有 PBR 管线和 Stage 7E 后的成果为基础，近期主线改为完成 Blender/FBX 静态场景导入，以 Classroom 和 Barcelona 场景作为真实需求来源。长期仍希望方便组合渲染流程、修改 Shader 和观察结果，但不在资产导入阶段提前展开蓝图、反射或任意 Shader 协议。
+
+以下阶段保留为候选能力地图。近期任务以本文记录的最新共识和实际代码为准，不按表格顺序自动展开；新 Model 的静态渲染链路已接通，下一项实验另行讨论：
+
+| 阶段 | 目标 | 明确边界 |
+|---|---|---|
+| Stage 8A | 建立统一资产数据层 | 定义与文件格式、Vulkan 无关的 ModelData/MeshData/NodeData 及校验；不接 FBX、不创建 GPU 资源 |
+| Stage 8B | ModelData 转换为运行时 Model | 创建共享 MeshResource、GPU 上传和 CPU 重数据释放策略；不解析 FBX |
+| Stage 8C | 接入 ufbx 和静态几何 | FBX 转换为 MeshData，保证顶点属性、索引、Primitive 和共享 Mesh 正确 |
+| Stage 8D | 导入节点层级与变换 | 处理父子关系、Mesh 引用、坐标系、单位和 FBX 变换语义 |
+| Stage 8E | 导入基础材质和纹理 | 支持明确的基础 PBR 子集、纹理寻址与去重；不承诺还原 Blender 程序材质 |
+| Stage 8F | 接入 ResourceManager 和 Scene | 建立资源句柄、共享资源与独立实例变换；不实现完整场景编辑器 |
+| Stage 8G | 完整场景验收 | Classroom 作为完整静态场景验收，Barcelona 用于复杂材质和室外场景验证 |
+| Stage 8H | 评估统一 glTF 导入链路 | 仅在前述数据协议验证稳定后，决定是否让 glTF 同样输出 ModelData |
+
+Stage 8A 的核心约束：MeshData 保存可共享的几何和 Primitive，不保存实例变换；NodeData 保存资产原始层级、局部变换和 MeshData 引用；多个节点可以引用同一 MeshData；ModelData 不出现 Vulkan 类型。阶段验收包括合法数据构造、共享引用，以及对无效索引、错误父子关系、节点环和非法矩阵的 CPU 校验。现有 glTF 路径和默认画面必须保持可用。
+
+Stage 8A 已于 2026-09-18 经用户 review 确认完成，并已提交为 `31b093b`、标记 `8A`。新增纯 CPU 的 AABB 与 ModelData 数据层；Mesh AABB 从全部顶点计算，处于 Mesh 局部空间，空 Mesh 的 AABB 无效。校验覆盖顶点/Primitive/材质索引、Mesh 引用、父子关系、节点环、根节点、有限矩阵及 AABB 一致性。临时 CPU 用例和完整 CMake 构建通过；8A 验收时新数据层尚未接入 glTF 或运行时 Model，未进行新链路的画面验证。
+
+### Stage 8B 完成内容与验收状态（2026-10-08）
+
+- `Model::Create(const ModelData&, std::string*)` 已实现数据校验、每份 MeshData 创建共享几何 MeshResource、节点层级与模型空间变换、模型 AABB、节点实例槽位、材质参数、纹理、GPU buffer 和 Set 1/2/3 创建与写入。多个节点可引用同一份几何，`meshIndex` 与 `instanceSlot` 分别编号。
+- `AssetLoader::LoadModelData` 已有 glTF/glb 分派，`GltfAssetLoader` 已有生成 ModelData 的实现；FBX 分支仍返回未实现。`external/ufbx` 源码与许可证已纳入仓库，但尚未加入构建或接入导入器。新引擎源文件已列入 `engine/CMakeLists.txt`。
+- 默认入口已改为 `ResourceManager::LoadModel → AssetLoader::LoadModelData → Model::Create`，模型池改为持有新 Model。Scene 从新模型 AABB 计算自动居中与缩放，并拒绝失效 handle；空包围盒与退化为点的模型不会除以零。
+- SceneExtractor 遍历新 Model 的扁平节点和 MeshResource 的 Primitive 生成 Item，分别填写 `meshIndex`、`instanceSlot`、`materialIndex` 和索引区间；节点层级矩阵由 Model 计算，提取时仅叠加 SceneObject 变换。RenderPass 按 Item 的 mesh 绑定 VBO/IBO，并使用新 Model 的 Set 1/2/3；天空盒与环境预计算仍使用旧 GLTFModel 系统资源。
+- 新路径仅消费静态模型数据，Application 的旧动画 UI 和动画更新调用已移除。新 glTF 导入器的 tinygltf 编译选项已对齐；Model 就绪检查已覆盖纹理回执，空实例不再分配 Set 2，几何创建失败清理前等待已提交上传。
+- `cmake --build --preset gcc-ninja` 编译和链接成功；临时 Scene 集成用例通过，覆盖共享 mesh、父子变换、实例槽位、Primitive 区间、材质队列、各 SceneObject 的 Item 变换、自动居中缩放、空资产、失效 handle、导入失败不占槽、上传就绪与延迟释放。临时用例文件已清理。
+- 默认程序通过命令行运行并进入渲染循环，正常退出码 0；默认运行与集成用例日志均无 Validation/error、descriptor unknown set 或生命周期错误，stderr 为空。用户已实际运行，并同意结束本次静态链路接入；本次没有逐项重新验收全部材质视觉效果。提交前复核构建和暂存区 `git diff --check` 通过，旧 glTF 拆分文件的空白问题已清理。FBX、蓝图、反射及额外材质能力仍按后续实际需求单独确认。
+- 用户曾反馈高 FPS 下鼠标旋转持续跳动，随后认为是电脑当时负载过高，本次不继续排查。只读检查发现 FPS 统计未包含消息处理时间、相机矩阵在绘制结束后更新，但没有确认它们是卡顿主因，也未修改相机、输入、计时或增加限帧策略。
 
 ## 当前对象所有权
 
@@ -49,9 +85,11 @@
 | 节点、显式边、输出节点 ID、编译执行计划 | FrameGraph 持有；节点借用 RenderPass 指针 |
 | Swapchain、FrameContext、RenderResourceRegistry、UI render target | Renderer 持有，负责创建资源、录制、同步和提交 |
 | 内部 image/buffer、默认 sampler | Registry 持有；导入的外部资产只保存 Manager handle |
-| Model、普通 Texture、EnvironmentCubeMap | ResourceManager 持有，handle 使用 index + generation |
+| 场景模型池（新 Model）、天空盒（旧 GLTFModel）、普通 Texture、EnvironmentCubeMap | ResourceManager 持有，池中资源 handle 使用 index + generation；天空盒仍为系统直接成员 |
+| 新 Model 的 MeshResource、ModelNode、材质数据和模型内 Texture | 新 Model 持有；节点仅引用 meshIndex，多个节点共享 Model 内同一 MeshResource |
+| 新 MeshResource 的 VBO/IBO、Primitive 与局部 AABB | MeshResource 持有；不保存节点实例变换或 CPU 顶点/索引数组 |
 | VkRenderPass、framebuffer、Set 0、pipeline layout、pipelines | 公共 RenderPass 持有；descriptor set layout 由 LayoutRegistry 管理 |
-| Material Set 1、逐帧 MeshData Set 2、MaterialBuffer Set 3 | Model 分配、写入并回收 |
+| 场景模型 Material Set 1、逐帧实例矩阵 Set 2、MaterialBuffer Set 3 及对应 buffer | 新 Model 管理；descriptor set 经 DescriptorAllocator 分配、归还，layout 由 LayoutRegistry 管理 |
 
 Registry 当前由 Renderer 持有，不是 FrameGraph 成员，也不是单例。销毁时先由 Renderer 等待 GPU 并清理 render target，再销毁 Context/Pass，之后清理 ResourceManager 和底层 descriptor/upload 服务。
 
@@ -143,5 +181,8 @@ EndFrame()        → 提交与呈现
 4. 外部纹理热替换尚无通用 descriptor dirty 跟踪；材质混合特性组合、跨材质对象的 descriptor 去重暂未实现。
 5. UI 仍在 Graph 外；MSAA 关闭；已实现基于显式输出节点的 Pass culling，尚无资源别名、自动生命周期分析和 async compute。
 6. Descriptor 与 staging 单例目前按主线程使用；后台资源线程需要另行明确同步边界。
+7. 新 Model 已接入默认运行链路并通过构建和 Validation/日志检查，用户已实际运行并同意结束本段。新路径按静态数据处理，不提供旧动画接口；天空盒仍沿用旧系统模型。
+8. 新 Model 的材质映射目前沿用固定 metallic-roughness shader 协议：金属度与粗糙度使用同一张打包纹理，shader 固定读取 B/G 通道；SurfaceQuantity 的任意通道选择尚未传入 shader。Model 不保留输入顶点、索引和纹理编码字节，输入 ModelData 的释放时机由调用方决定，模型仍保留 CPU 实例与材质参数数组。
+9. SceneExtractor 的 Item 包含各 SceneObject 的完整变换，但当前 shader 仍统一使用第一个 SceneObject 的 UBO model 矩阵，尚未支持多个场景对象独立变换的实际绘制；Model 内共享 mesh 的各节点使用各自的 instanceSlot。新材质数据没有 Unlit 字段；未指定材质的 Primitive 当前跳过，导入器尚未补齐默认材质。
 
-下一次继续时以 7E 稳定点和这些已确认边界为准，先讨论下一项框架需求，不重复开展已经完成的 7C/7D/7E，也不自动开始蓝图、反射或材质效果完善。
+下一次继续时以稳定实现提交 `2a3bcd5` 为基础，结合已知边界确定下一项任务。建议先讨论“同一 Model、两个 SceneObject、不同位置”的实验，解决当前 shader 统一使用第一个对象 model 矩阵的限制；此建议不是实施授权。不重复开展已完成的静态链路接入，不按候选能力地图自动展开 FBX 或其他后续能力。

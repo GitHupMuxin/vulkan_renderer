@@ -42,10 +42,6 @@ namespace app
             int32_t                                     debugViewEquation = 0;
             int32_t                                     debugBsdfType = 0;
 
-            int32_t                                     animationIndex = 0;
-            float                                       animationTimer = 0.0f;
-            bool                                        animate = true;
-
             float                                       fpsTimer = 0.0f;
             uint32_t                                    frameCounter = 0;
 

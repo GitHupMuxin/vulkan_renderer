@@ -48,11 +48,117 @@ namespace engine::resource
         }
     }
 
+    SurfaceQuantityKind GetSurfaceQuantityKind(MaterialSlot slot)
+    {
+        switch (slot)
+        {
+            case MaterialSlot::Metallic:
+            case MaterialSlot::Roughness:
+            case MaterialSlot::Occlusion:
+                return SurfaceQuantityKind::Scalar;
+            default:
+                return SurfaceQuantityKind::Vector;
+        }
+    }
+
+    SurfaceQuantity* GetSurfaceQuantity(MaterialData& material, MaterialSlot slot)
+    {
+        switch (slot)
+        {
+            case MaterialSlot::BaseColor: return &material.baseColor;
+            case MaterialSlot::Metallic:  return &material.metallic;
+            case MaterialSlot::Roughness: return &material.roughness;
+            case MaterialSlot::Normal:    return &material.normal;
+            case MaterialSlot::Occlusion: return &material.occlusion;
+            case MaterialSlot::Emissive:  return &material.emissive;
+            default:                      return nullptr;
+        }
+    }
+
+    const SurfaceQuantity* GetSurfaceQuantity(const MaterialData& material, MaterialSlot slot)
+    {
+        return GetSurfaceQuantity(const_cast<MaterialData&>(material), slot);
+    }
+
+    namespace
+    {
+        // 纹理被引用时通道必须恰好选中合法的分量：标量量只能一个通道，向量量必须是 RGB 组合。
+        bool ValidateSurfaceQuantity(const MaterialData& material, MaterialSlot slot, const ModelData& model,
+                                     const std::string& materialName, std::string* error)
+        {
+            const SurfaceQuantity* quantity = GetSurfaceQuantity(material, slot);
+            const std::string quantityName = materialName + " " + std::to_string(static_cast<int>(slot));
+
+            if (quantity->textureIndex == InvalidIndex)
+            {
+                // 无纹理时 factor 必须有限，否则会产出 NaN 着色结果。
+                for (int component = 0; component < 4; ++component)
+                {
+                    if (!std::isfinite(quantity->factor[component]))
+                    {
+                        return Fail(error, quantityName + " factor is not finite");
+                    }
+                }
+                return true;
+            }
+
+            if (quantity->textureIndex >= model.textures.size())
+            {
+                return Fail(error, quantityName + " texture index is out of range");
+            }
+
+            // 指定了纹理却没选通道，等于不知道读哪个分量，属于数据错误。
+            if (quantity->channels == TextureChannelNone)
+            {
+                return Fail(error, quantityName + " references a texture but selects no channel");
+            }
+
+            const uint8_t vectorChannels = static_cast<uint8_t>(TextureChannelRgb);
+            const uint8_t allChannels = static_cast<uint8_t>(TextureChannelRgba);
+            if (quantity->channels & ~allChannels)
+            {
+                return Fail(error, quantityName + " selects an unknown texture channel");
+            }
+
+            if (GetSurfaceQuantityKind(slot) == SurfaceQuantityKind::Scalar)
+            {
+                // 标量量必须只选一个通道，多通道会让"取哪个分量"失去定义。
+                const uint8_t single = quantity->channels;
+                const bool isSingleChannel = (single & (single - 1)) == 0;
+                if (!isSingleChannel)
+                {
+                    return Fail(error, quantityName + " is scalar but selects more than one texture channel");
+                }
+            }
+            else if ((quantity->channels & vectorChannels) != vectorChannels)
+            {
+                return Fail(error, quantityName + " is a vector quantity and must select RGB");
+            }
+
+            return true;
+        }
+    }
+
     bool ValidateModelData(const ModelData& model, std::string* error)
     {
         if (error != nullptr)
         {
             error->clear();
+        }
+
+        // 检查每个材质的表面量：纹理引用范围与通道选择必须自洽。
+        for (size_t materialIndex = 0; materialIndex < model.materials.size(); ++materialIndex)
+        {
+            const MaterialData& material = model.materials[materialIndex];
+            const std::string materialName = "Material " + std::to_string(materialIndex);
+
+            for (int slotValue = 0; slotValue < static_cast<int>(MaterialSlot::Count); ++slotValue)
+            {
+                if (!ValidateSurfaceQuantity(material, static_cast<MaterialSlot>(slotValue), model, materialName, error))
+                {
+                    return false;
+                }
+            }
         }
 
         // 检查每个 Mesh 的几何数据与局部包围盒。

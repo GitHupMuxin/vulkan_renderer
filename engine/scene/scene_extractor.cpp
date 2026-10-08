@@ -42,7 +42,7 @@ namespace engine::scene
         for (size_t i = 0; i < scene.GetModelCount(); ++i)
         {
             resource::ModelHandle h = scene.sceneObjects_[i].modelHandle;
-            // PeekModel：资源存在即可参与提取（上传在途也算），只保证 descriptor/几何可用；
+            // 提取只读取 CPU 数据；上传回执由绘制端 GetModel 检查。
             resource::Model* model = rm.PeekModel(h);
             if (model == nullptr) continue;
 
@@ -51,71 +51,76 @@ namespace engine::scene
 
             const glm::mat4& world = scene.sceneObjects_[i].transform;
 
-            FlattenNodes(model, h, model->GetNodes(), world, renderScene);
+            FlattenNodes(*model, h, world, renderScene);
         }
     }
 
 
-    void SceneExtractor::FlattenNodes(resource::Model* model, resource::ModelHandle handle, const std::vector<resource::Node*>& nodes, const glm::mat4& parentWorld, render::RenderScene& renderScene)
+    void SceneExtractor::FlattenNodes(const resource::Model& model, resource::ModelHandle handle, const glm::mat4& objectWorld, render::RenderScene& renderScene)
     {
-        for (auto* node : nodes)
+        // Model 已计算完整层级变换，遍历扁平节点时不能再次累乘父节点。
+        for (const resource::ModelNode& node : model.GetNodes())
         {
-        // 节点自身变换叠加（glTF 局部 → 世界）
-            glm::mat4 nodeWorld = parentWorld * node->GetMatrix();
-
-            if (node->mesh)
+            if (node.meshIndex == resource::InvalidIndex)
             {
-                for (const auto* primitive : node->mesh->primitives)
+                continue;
+            }
+            const resource::MeshResource* mesh = model.GetMesh(node.meshIndex);
+            if (mesh == nullptr)
+            {
+                // 不完整资源不能生成指向无效几何的 Item。
+                continue;
+            }
+
+            for (const resource::PrimitiveData& primitive : mesh->GetPrimitives())
+            {
+                if (primitive.indexCount == 0)
                 {
-                    render::RenderItem item;
-                    item.modelHandle = handle;
-                    item.meshIndex = node->mesh->index;
-                    item.materialIndex = primitive->material.index;
-                    item.firstIndex = primitive->firstIndex;
-                    item.indexCount = primitive->indexCount;
-                    item.vertexCount = primitive->vertexCount;
-                    item.hasIndices = primitive->hasIndices;
-                    item.worldTransform = nodeWorld;
-                    item.materialDescriptorSet = primitive->material.descriptorSet;
+                    // 空 Primitive 没有绘制工作，也不需要绑定材质。
+                    continue;
+                }
+                const resource::MaterialData* material = model.GetMaterial(primitive.materialIndex);
+                if (material == nullptr)
+                {
+                    // 没有材质时不能访问材质 SSBO；导入器应先补齐默认材质。
+                    LOG_WARN("SceneExtractor: primitive has no renderable material, skipped.");
+                    continue;
+                }
 
-                    // 分类 → 队列 + 管线变体
-                    switch (primitive->material.alphaMode)
-                    {
-                        case resource::Material::ALPHAMODE_OPAQUE:
-                            item.renderQueue = render::RenderQueue::Opaque;
-                            break;
-                        case resource::Material::ALPHAMODE_MASK:
-                            item.renderQueue = render::RenderQueue::Masked;
-                            break;
-                        case resource::Material::ALPHAMODE_BLEND:
-                            item.renderQueue = render::RenderQueue::Transparent;
-                            break;
-                    }
-                    // 当前只有一条透明管线，BLEND 优先使用它。
-                    if (item.renderQueue == render::RenderQueue::Transparent)
-                    {
-                        item.pipeline = render::PipelineVariant::AlphaBlending;
-                    }
-                    else
-                    {
-                        item.pipeline = primitive->material.unlit
-                            ? render::PipelineVariant::Unlit
-                            : (primitive->material.doubleSided
-                                ? render::PipelineVariant::DoubleSided
-                                : render::PipelineVariant::Pbr);
-                    }
+                render::RenderItem item;
+                item.modelHandle = handle;
+                item.meshIndex = node.meshIndex;
+                item.instanceSlot = node.instanceSlot;
+                item.materialIndex = primitive.materialIndex;
+                item.firstIndex = primitive.firstIndex;
+                item.indexCount = primitive.indexCount;
+                item.hasIndices = true;
+                item.worldTransform = objectWorld * node.worldTransform;
+                item.materialDescriptorSet = model.GetMaterialTextureSet(primitive.materialIndex);
 
-                    // 分装到对应队列
-                    switch (item.renderQueue)
-                    {
-                        case render::RenderQueue::Opaque:      renderScene.opaqueItems.push_back(item); break;
-                        case render::RenderQueue::Masked:      renderScene.maskedItems.push_back(item); break;
-                        case render::RenderQueue::Transparent: renderScene.transparentItems.push_back(item); break;
-                    }
+                switch (material->alphaMode)
+                {
+                    case resource::MaterialData::AlphaMode::Opaque:
+                        item.renderQueue = render::RenderQueue::Opaque;
+                        break;
+                    case resource::MaterialData::AlphaMode::Mask:
+                        item.renderQueue = render::RenderQueue::Masked;
+                        break;
+                    case resource::MaterialData::AlphaMode::Blend:
+                        item.renderQueue = render::RenderQueue::Transparent;
+                        break;
+                }
+                item.pipeline = item.renderQueue == render::RenderQueue::Transparent
+                    ? render::PipelineVariant::AlphaBlending
+                    : (material->doubleSided ? render::PipelineVariant::DoubleSided : render::PipelineVariant::Pbr);
+
+                switch (item.renderQueue)
+                {
+                    case render::RenderQueue::Opaque:      renderScene.opaqueItems.push_back(item); break;
+                    case render::RenderQueue::Masked:      renderScene.maskedItems.push_back(item); break;
+                    case render::RenderQueue::Transparent: renderScene.transparentItems.push_back(item); break;
                 }
             }
-            // 递归子节点
-            FlattenNodes(model, handle, node->children, nodeWorld, renderScene);
         }
     }
 

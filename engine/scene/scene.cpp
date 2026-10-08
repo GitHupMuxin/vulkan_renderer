@@ -31,23 +31,26 @@ namespace engine::scene
     {
         auto& rm = resource::ResourceManager::Instance();
 
-        // 计算默认 transform 需要 model 的 AABB（此时 handle 一定有效，因为刚加载）
-        // PeekModel：上传在途（Uploading）也算资源存在；GetAABBBox 是纯 CPU 数据，无需 GPU 就绪
+        resource::Model* model = rm.PeekModel(modelHandle);
+        if (model == nullptr)
+        {
+            // 显式传入变换时也不能把失效 handle 放进 Scene。
+            LOG_WARN("Scene: AddObject called with invalid model handle, skipped.");
+            return;
+        }
+
         if (transform == glm::mat4(1.0f))
         {
-            resource::Model* model = rm.PeekModel(modelHandle);
-            if (model == nullptr)
+            const resource::AABB& bounds = model->GetBounds();
+            if (bounds.IsValid())
             {
-                LOG_WARN("Scene: AddObject called with invalid model handle, skipped.");
-                return;
+                const glm::vec3 size = bounds.max - bounds.min;
+                const glm::vec3 center = bounds.min + 0.5f * size;
+                const float extent = std::max(size.x, std::max(size.y, size.z));
+                // 退化为点的模型只居中，避免自动缩放除以零。
+                const float scale = extent > 0.0f ? 0.5f / extent : 1.0f;
+                transform = glm::translate(glm::scale(glm::mat4(1.0f), glm::vec3(scale)), -center);
             }
-            glm::mat4 aabb = model->GetAABBBox();
-            glm::vec3 size  = glm::vec3(aabb[0][0], aabb[1][1], aabb[2][2]);
-            glm::vec3 min   = glm::vec3(aabb[3][0], aabb[3][1], aabb[3][2]);
-            glm::vec3 center = min + 0.5f * size;
-
-            float scale = (1.0f / std::max(size.x, std::max(size.y, size.z))) * 0.5f;
-            transform = glm::translate(glm::scale(glm::mat4(1.0f), glm::vec3(scale)), -center);
         }
 
         SceneObject object;

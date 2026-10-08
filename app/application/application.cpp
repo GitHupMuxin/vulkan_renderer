@@ -139,11 +139,8 @@ namespace app
 
 		ImGui::NewFrame();
 
-		// 通过 Scene 便捷方法解析第一个 model（handle 校验），UI 多处复用
-		engine::resource::Model* primaryModel = this->scene_.GetModelAt(0);
-
 		ImGui::SetNextWindowPos(ImVec2(10, 10));
-		ImGui::SetNextWindowSize(ImVec2(200 * scale, (primaryModel != nullptr && primaryModel->GetAnimations().size() > 0 ? 500 : 420) * scale), ImGuiSetCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(200 * scale, 420 * scale), ImGuiSetCond_Always);
 		ImGui::Begin("Vulkan glTF 2.0 PBR", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 		ImGui::PushItemWidth(100.0f * scale);
 
@@ -229,17 +226,6 @@ namespace app
 			};
 			if (ui_->Combo("PBR equation", &debugViewEquation, debugNamesEquation)) {
 				this->scene_.params_.debugViewEquation = static_cast<float>(debugViewEquation);
-			}
-		}
-
-		if (primaryModel != nullptr && primaryModel->GetAnimations().size() > 0) {
-			if (ui_->Header("Animations")) {
-				ui_->Checkbox("Animate", &animate);
-				std::vector<std::string> animationNames;
-				for (auto animation : primaryModel->GetAnimations()) {
-					animationNames.push_back(animation.name);
-				}
-				ui_->Combo("Animation", &animationIndex, animationNames);
 			}
 		}
 
@@ -366,19 +352,6 @@ namespace app
 		this->renderer_->EndUIRenderPass();
 
 		this->renderer_->EndFrame();
-
-		// 动画更新属于"场景逻辑"，由组合层驱动（Renderer 不持有 Scene）
-		if (!this->paused_) {
-			engine::resource::Model* animModel = this->scene_.GetModelAt(0);
-			if (this->animate && animModel != nullptr && animModel->GetAnimations().size() > 0) {
-				this->animationTimer += this->frameTimer;
-				if (this->animationTimer > animModel->GetAnimations()[this->animationIndex].end) {
-					this->animationTimer -= animModel->GetAnimations()[this->animationIndex].end;
-				}
-				animModel->UpdateAnimation(this->animationIndex, this->animationTimer);
-				animModel->UpdateMeshDataBuffer(this->renderer_->GetFrameIndex());
-			}
-		}
 
 		this->frameCounter++;
 		auto tEnd = std::chrono::high_resolution_clock::now();

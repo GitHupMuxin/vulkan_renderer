@@ -37,7 +37,11 @@ set(ENGINE_CORE_HEADERS
 set(ENGINE_RESOURCE_SRC
     "resource/environment_lighting.cpp"
     "resource/model_data.cpp"
+    "resource/mesh_resource.cpp"
     "resource/model.cpp"
+    "resource/asset_loader.cpp"
+    "resource/gltf_asset_loader.cpp"
+    "resource/gltf_model.cpp"
     "resource/resource_manager.cpp"
     "resource/texture.cpp"
 )
@@ -45,7 +49,11 @@ set(ENGINE_RESOURCE_HEADERS
     "resource/aabb.h"
     "resource/environment_lighting.h"
     "resource/model_data.h"
+    "resource/mesh_resource.h"
     "resource/model.h"
+    "resource/asset_loader.h"
+    "resource/gltf_asset_loader.h"
+    "resource/gltf_model.h"
     "resource/resource_manager.h"
     "resource/texture.h"
 )

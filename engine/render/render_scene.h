@@ -1,7 +1,6 @@
 #pragma once
 #include <vector>
 
-#include "engine/resource/model.h"
 #include "engine/resource/resource_manager.h"
 
 
@@ -59,8 +58,12 @@ namespace engine::render
         uint32_t                            vertexCount = 0;
         bool                                hasIndices = false;
 
-        uint32_t                            meshIndex;
-        uint32_t                            materialIndex;
+        // 两个编号语义不同，不能合并：
+        // meshIndex 指向模型内的几何（VBO/IBO 对），按共享的几何编号，多个节点可相同；
+        // instanceSlot 指向逐帧实例矩阵 SSBO 的槽位，按「带 mesh 的节点实例」编号。
+        uint32_t                            meshIndex = 0;
+        uint32_t                            instanceSlot = 0;
+        uint32_t                            materialIndex = 0;
 
         glm::mat4                           worldTransform{ 1.0f };
 
@@ -68,7 +71,7 @@ namespace engine::render
 
         PipelineVariant                     pipeline = PipelineVariant::Pbr;        
 
-        VkDescriptorSet                     materialDescriptorSet;
+        VkDescriptorSet                     materialDescriptorSet = VK_NULL_HANDLE;
     };
     
     struct RenderScene

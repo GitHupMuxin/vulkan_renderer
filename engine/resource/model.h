@@ -1,378 +1,147 @@
 #pragma once
-/**
- * Vulkan glTF model and texture loading class based on tinyglTF (https://github.com/syoyo/tinygltf)
- *
- * Copyright (C) 2018-2024 by Sascha Willems - www.saschawillems.de
- *
- * This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
- */
 
-#pragma once
-
-#include <iostream>
-#include <stdlib.h>
+#include <cstdint>
+#include <memory>
 #include <string>
-#include <fstream>
 #include <vector>
 
-#include "vulkan/vulkan.h"
-#include "engine/core/device.h" 
+#include <vulkan/vulkan.h>
+
+#include <glm/glm.hpp>
+
 #include "engine/core/buffer.h"
+#include "engine/resource/aabb.h"
+#include "engine/resource/mesh_resource.h"
+#include "engine/resource/model_data.h"
 #include "engine/resource/texture.h"
 
-#define GLM_FORCE_RADIANS
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
-#include <gli/gli.hpp>
-#include <glm/gtx/string_cast.hpp>
-
-// ERROR is already defined in wingdi.h and collides with a define in the Draco headers
-#if defined(_WIN32) && defined(ERROR) && defined(TINYGLTF_ENABLE_DRACO) 
-#undef ERROR
-#pragma message ("ERROR constant already defined, undefining")
-#endif
-
-// #if defined(__ANDROID__)
-// #define TINYGLTF_ANDROID_LOAD_FROM_ASSETS
-// #include <android/asset_manager.h>
-// #endif
-
-// Changing this value here also requires changing it in the vertex shader
-#define MAX_NUM_JOINTS 128u
 
 namespace engine::resource
 {
-	struct Node;
+    // 节点在运行时的形态：ModelData::NodeData 加上解析后的模型空间变换与实例槽位。
+    // 节点不持有几何，只引用 Model 里的 mesh；多个节点可以引用同一份 mesh。
+    struct ModelNode
+    {
+        std::string             name;
+        uint32_t                meshIndex = InvalidIndex;
+        uint32_t                parentIndex = InvalidIndex;
+        std::vector<uint32_t>   childIndices;
 
-	struct BoundingBox 
-	{
-		glm::vec3 		min;
-		glm::vec3 		max;
-		bool 			valid = false;
-		BoundingBox();
-		BoundingBox(glm::vec3 min, glm::vec3 max);
-		BoundingBox 	GetAABB(glm::mat4 m);
-	};
+        glm::mat4               localTransform{1.0f};
 
-	struct Material 
-	{		
-		enum AlphaMode{ ALPHAMODE_OPAQUE, ALPHAMODE_MASK, ALPHAMODE_BLEND };
-		AlphaMode 		alphaMode = ALPHAMODE_OPAQUE;
-		float 			alphaCutoff = 1.0f;
-		float 			metallicFactor = 1.0f;
-		float 			roughnessFactor = 1.0f;
-		glm::vec4 		baseColorFactor = glm::vec4(1.0f);
-		glm::vec4 		emissiveFactor = glm::vec4(0.0f);
-		Texture*		baseColorTexture;
-		Texture*		metallicRoughnessTexture;
-		Texture*		normalTexture;
-		Texture*		occlusionTexture;
-		Texture*		emissiveTexture;
-		bool 			doubleSided = false;
-		struct TexCoordSets 
-		{
-			uint8_t baseColor = 0;
-			uint8_t metallicRoughness = 0;
-			uint8_t specularGlossiness = 0;
-			uint8_t normal = 0;
-			uint8_t occlusion = 0;
-			uint8_t emissive = 0;
-		};
-		TexCoordSets 	texCoordSets;
+        // 模型空间（相对资产根）的世界变换；场景实例变换由 Scene 叠加，不在资产内部。
+        glm::mat4               worldTransform{1.0f};
 
-		struct Extension 
-		{
-			Texture *specularGlossinessTexture;
-			Texture *diffuseTexture;
-			glm::vec4 diffuseFactor = glm::vec4(1.0f);
-			glm::vec3 specularFactor = glm::vec3(0.0f);
-		};
-		Extension 		extension;
+        // 逐帧实例矩阵槽位，InvalidIndex 表示该节点没有 mesh。
+        // 它与 meshIndex 是两种编号：本字段按"带 mesh 的节点实例"编号（每个节点一个），
+        // meshIndex 按共享的几何编号（多个节点可能相同）。
+        uint32_t                instanceSlot = InvalidIndex;
+    };
 
-		struct PbrWorkflows 
-		{
-			bool metallicRoughness = true;
-			bool specularGlossiness = false;
-		};
-		PbrWorkflows 	pbrWorkflows;
+    // 一个资产在运行时的形态：几何 + 节点层级 + 材质。
+    // 输入是 AssetLoader 产出的 ModelData；本类不解析文件格式，也不决定怎么着色。
+    class Model
+    {
+        public:
+            // set 3 的 ShaderMaterial，字段顺序必须与 includes/shadermaterial.glsl 一致。
+            struct alignas(16) ShaderMaterial
+            {
+                glm::vec4   baseColorFactor;
+                glm::vec4   emissiveFactor;
+                glm::vec4   diffuseFactor;
+                glm::vec4   specularFactor;
+                float       workflow;
+                int32_t     baseColorTextureSet;
+                int32_t     physicalDescriptorTextureSet;
+                int32_t     normalTextureSet;
+                int32_t     occlusionTextureSet;
+                int32_t     emissiveTextureSet;
+                float       metallicFactor;
+                float       roughnessFactor;
+                float       alphaMask;
+                float       alphaMaskCutoff;
+                float       emissiveStrength;
+            };
 
-		VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-		int 			index = 0;
-		bool 			unlit = false;
-		float 			emissiveStrength = 1.0f;
-	};
+            // set 2 的逐实例数据，字段顺序必须与 pbr.vert 的 MeshData 一致。
+            // 蒙皮字段保留：静态几何把 jointCount 置 0，由 shader 跳过蒙皮分支，
+            // 这样静态与蒙皮几何能共用同一条管线。
+            static constexpr uint32_t kMaxJoints = 128u;
+            struct alignas(16) ShaderMeshData
+            {
+                glm::mat4   matrix;
+                glm::mat4   jointMatrix[kMaxJoints]{};
+                uint32_t    jointCount = 0;
+            };
 
-	struct Primitive 
-	{
-		uint32_t 		firstIndex;
-		uint32_t 		indexCount;
-		uint32_t 		vertexCount;
-		Material&		material;
-		bool 			hasIndices;
-		BoundingBox 	bb;
-		Primitive(uint32_t firstIndex, uint32_t indexCount, uint32_t vertexCount, Material& material);
-		void 			SetBoundingBox(glm::vec3 min, glm::vec3 max);
-	};
+        private:
+            // 几何：一份 MeshData 一对 VBO/IBO；节点用 meshIndex 索引。
+            std::vector<std::unique_ptr<MeshResource>>  meshes_;
+            std::vector<ModelNode>                      nodes_;
 
-	struct Mesh 
-	{
-		std::vector<Primitive*> primitives;
-		BoundingBox 			bb;
-		BoundingBox 			aabb;
-		glm::mat4 				matrix;
-		glm::mat4 				jointMatrix[MAX_NUM_JOINTS]{};
-		uint32_t 				jointcount{ 0 };
-		uint32_t 				index;
-		Mesh(glm::mat4 matrix);
-		~Mesh();
-		void 					SetBoundingBox(glm::vec3 min, glm::vec3 max);
-	};
+            // 逐帧实例矩阵（set 2）：只为"带 mesh 的节点"建槽位。
+            std::vector<ShaderMeshData>                 instanceData_;
+            std::vector<core::Buffer>                   instanceBuffers_;
+            std::vector<VkDescriptorSet>                instanceSets_;
+            uint64_t                                    instanceReadyAt_ = 0;
 
-	struct Skin 
-	{
-		std::string 			name;
-		Node*					skeletonRoot = nullptr;
-		std::vector<glm::mat4> 	inverseBindMatrices;
-		std::vector<Node*> 		joints;
-	};
+            // 材质：本期仍由 Model 持有（见 docs/PROJECT_STATE.md 的后续计划）。
+            std::vector<std::unique_ptr<Texture>>       textures_;
+            std::vector<MaterialData>                   materials_;
+            std::vector<ShaderMaterial>                 shaderMaterials_;
+            std::vector<VkDescriptorSet>                materialTextureSets_;   // set 1，逐材质
+            core::Buffer                                materialBuffer_;        // set 3
+            VkDescriptorSet                             materialSet_ = VK_NULL_HANDLE;
+            uint64_t                                    materialReadyAt_ = 0;
 
-	struct Node 
-	{
-		Node*				parent;
-		uint32_t 			index;
-		std::vector<Node*> 	children;
-		glm::mat4 			matrix;
-		std::string 		name;
-		Mesh *mesh;
-		Skin *skin;
-		int32_t 			skinIndex = -1;
-		glm::vec3 			translation{};
-		glm::vec3 			scale{ 1.0f };
-		glm::quat 			rotation{};
-		BoundingBox 		bvh;
-		BoundingBox 		aabb;
-		bool 				useCachedMatrix{ false };
-		glm::mat4 			cachedLocalMatrix{ glm::mat4(1.0f) };
-		glm::mat4 			cachedMatrix{ glm::mat4(1.0f) };
-		glm::mat4 			LocalMatrix();
-		glm::mat4 			GetMatrix();
-		void 				Update();
-		~Node();
-	};
+            AABB                                        bounds_;
 
-	struct AnimationChannel 
-	{
-		enum PathType { TRANSLATION, ROTATION, SCALE };
-		PathType 		path;
-		Node*				node;
-		uint32_t 			samplerIndex;
-	};
+            // 建资源分四步：纹理、逐帧实例缓冲、材质缓冲、descriptor。
+            // 顺序有依赖：descriptor 写入要求 buffer 与纹理都已存在；实例缓冲按 frameCount 建。
+            void                                        CreateTextures(const ModelData& data);
+            void                                        CreateInstanceBuffers();
+            void                                        CreateMaterialBuffer();
+            void                                        CreateDescriptorSets();
+            void                                        UpdateDescriptorSets();
 
-	struct AnimationSampler 
-	{
-		enum InterpolationType { LINEAR, STEP, CUBICSPLINE };
-		InterpolationType 		interpolation;
-		std::vector<float> 		inputs;
-		std::vector<glm::vec4> 	outputsVec4;
-		std::vector<float> 		outputs;
+            void                                        Destroy();
 
-		glm::vec4 				CubicSplineInterpolation(size_t index, float time, uint32_t stride);
-		void 					Translate(size_t index, float time, Node* node);
-		void 					Scale(size_t index, float time, Node* node);
-		void 					Rotate(size_t index, float time, Node* node);
-	};
+        public:
+            Model() = default;
+            ~Model();
 
-	struct Animation 
-	{
-		std::string 					name;
-		std::vector<AnimationSampler> 	samplers;
-		std::vector<AnimationChannel> 	channels;
-		float 							start = std::numeric_limits<float>::max();
-		float 							end = std::numeric_limits<float>::min();
-	};
+            Model(const Model&) = delete;
+            Model& operator=(const Model&) = delete;
 
-	class Model
-	{
-		public:
-			// Vertex layout shared by all model formats; referenced by the render passes
-			struct Vertex 
-			{
-				glm::vec3 		pos;
-				glm::vec3 		normal;
-				glm::vec2 		uv0;
-				glm::vec2 		uv1;
-				glm::uvec4 		joint0;
-				glm::vec4 		weight0;
-				glm::vec4 		color;
-			};
+            // 把一份资产数据转成 GPU 资源。失败时返回 false 并写入首个错误原因，
+            // 已建立的部分资源由析构回收。重复调用会先释放已有资源。
+            bool                                        Create(const ModelData& data, std::string* error = nullptr);
 
-			virtual ~Model() = default;
+            // 顶点/索引/材质/纹理的上传回执是否全部达成；未达成时不可用于绘制。
+            bool                                        IsReady() const;
 
-			virtual uint32_t 							GetMaterialCount() = 0;
-			virtual uint32_t 							GetMeshCount() = 0;
-			virtual void 								LoadFromFile(std::string filename, float scale = 1.0) = 0;
-			virtual std::unique_ptr<Model> 				Clone() = 0;
-			virtual void 								Draw(VkCommandBuffer commandBuffer) = 0;
-			virtual glm::mat4 							GetAABBBox() = 0;
-			virtual std::vector<core::Buffer>& 			GetMeshShaderBuffer() = 0;
-			virtual core::Buffer& 						GetMaterialShaderBuffer() = 0;
-			virtual std::vector<resource::Material>& 	GetMaterialArray() = 0;
-			virtual std::vector<VkDescriptorSet>& 		GetDescriptorSetsMeshData() = 0;
-			// Descriptor set that exposes this model's material SSBO (set=3)
-			virtual VkDescriptorSet& 					GetDescriptorSetMaterial() = 0;
+            // 几何自带的属性：包围盒、mesh 数、节点数。
+            const AABB&                                 GetBounds() const { return this->bounds_; }
+            uint32_t                                    GetMeshCount() const { return static_cast<uint32_t>(this->meshes_.size()); }
+            const std::vector<ModelNode>&               GetNodes() const { return this->nodes_; }
 
-			virtual void 								CreateDescriptorSet() = 0;
-			// Set 分配后填写资源引用；调用时这些 Set 必须尚未被 GPU 使用。
-			virtual void 								UpdateDescriptorSets() = 0;
+            // 按 mesh 下标取几何；越界返回 nullptr。
+            const MeshResource*                         GetMesh(uint32_t meshIndex) const;
 
-			// Render-layer interface (VBO/IBO + scene graph + animation)
-			virtual VkBuffer 							GetVertexBuffer() = 0;
-			virtual VkBuffer 							GetIndexBuffer() = 0;
-			virtual std::vector<Node*>& 				GetNodes() = 0;
-			virtual std::vector<Node*>& 				GetLinearNodes() = 0;
-			virtual std::vector<Animation>& 			GetAnimations() = 0;
-			virtual void 								UpdateAnimation(uint32_t index, float time) = 0;
-			virtual void 								UpdateMeshDataBuffer(uint32_t index) = 0;
-			virtual void 								CreateMaterialBuffer() = 0;
-			virtual void 								CreateMeshDataBuffer() = 0;
+            // 绑定某个 mesh 的顶点/索引缓冲，供绘制前调用；越界时不改变已有绑定。
+            void                                        BindGeometry(VkCommandBuffer cb, uint32_t meshIndex) const;
 
-			// GPU 上传是否已全部完成（顶点/索引/材质/纹理回执达成）。
-			// 默认 true：未走异步上传的模型视为就绪；GLTFModel 覆盖为回执检查
-			virtual bool 								IsReady() const { return true; }
-	};
+            // 只按几何绘制全部 primitive（不涉及材质与 descriptor），供天空盒等
+            // 自备管线与描述符的离线路径使用。
+            void                                        Draw(VkCommandBuffer cb) const;
 
-	class GLTFModel : public Model 
-	{
-		public:
-			// List of glTF extensions supported by this application
-    		// Models with un-supported extensions may not work/look as expected
-    		static const std::vector<std::string> 	supportedExtensions; 
+            // 材质数据视图：材质属性与逐材质纹理 Set 由渲染层读取。
+            uint32_t                                    GetMaterialCount() const { return static_cast<uint32_t>(this->materials_.size()); }
+            const MaterialData*                         GetMaterial(uint32_t materialIndex) const;
+            VkDescriptorSet                             GetMaterialTextureSet(uint32_t materialIndex) const;
 
-    		enum PBRWorkflows{ PBR_WORKFLOW_METALLIC_ROUGHNESS = 0, PBR_WORKFLOW_SPECULAR_GLOSSINESS = 1 };
-
-			struct alignas(16) ShaderMaterial 
-			{
-				glm::vec4 	baseColorFactor;
-				glm::vec4 	emissiveFactor;
-				glm::vec4 	diffuseFactor;
-				glm::vec4 	specularFactor;
-				float 		workflow;
-				int 		colorTextureSet;
-				int 		PhysicalDescriptorTextureSet;
-				int 		normalTextureSet;
-				int 		occlusionTextureSet;
-				int 		emissiveTextureSet;
-				float 		metallicFactor;
-				float 		roughnessFactor;
-				float 		alphaMask;
-				float 		alphaMaskCutoff;
-				float 		emissiveStrength;
-			};
-			engine::core::Buffer 					shaderMaterialBuffer_;
-			uint64_t 								materialReadyAt_ = 0;   // Material SSBO 上传完成 timeline 值
-
-			struct alignas(16) ShaderMeshData 
-			{
-				glm::mat4 	matrix;
-				glm::mat4 	jointMatrix[MAX_NUM_JOINTS]{};
-				uint32_t 	jointcount{ 0 };
-			};
-			std::vector<engine::core::Buffer> 		shaderMeshDataBuffers_;
-			std::vector<VkDescriptorSet> 			descriptorSetsMeshData_;
-			VkDescriptorSet 						descriptorSetMaterial_ = VK_NULL_HANDLE;
-
-			struct Vertices 
-			{
-				VkBuffer 		buffer = VK_NULL_HANDLE;
-				VkDeviceMemory	memory;
-				uint64_t		readyAt = 0;   // 上传完成 timeline 值（流式加载就绪判断用）
-			};
-			Vertices 						vertices_;
-
-			struct Indices 
-			{
-				VkBuffer 		buffer = VK_NULL_HANDLE;
-				VkDeviceMemory 	memory;
-				uint64_t		readyAt = 0;   // 上传完成 timeline 值（流式加载就绪判断用）
-			};
-			Indices							indices_;
-
-			glm::mat4 						aabb_;
-
-			std::vector<Node*> 				nodes_;
-			std::vector<Node*> 				linearNodes_;
-
-			std::vector<Skin*> 				skins_;
-
-			std::vector<Texture> 			textures_;
-			std::vector<TextureSampler> 	textureSamplers_;
-			std::vector<Material> 			materials_;
-			std::vector<Animation> 			animations_;
-			std::vector<std::string> 		extensions_;
-
-			struct Dimensions 
-			{
-				glm::vec3 min = glm::vec3(FLT_MAX);
-				glm::vec3 max = glm::vec3(-FLT_MAX);
-			};
-			Dimensions 						dimensions_;
-
-			struct LoaderInfo 
-			{
-				uint32_t* 	indexBuffer;
-				Vertex* 	vertexBuffer;
-				size_t 		indexPos = 0;
-				size_t 		vertexPos = 0;
-			};
-
-			std::string 					filePath_;
-
-			~GLTFModel();
-			void 								Destroy();
-			void 								LoadNode(Node* parent, const tinygltf::Node& node, uint32_t nodeIndex, const tinygltf::Model& model, LoaderInfo& loaderInfo, float globalscale);
-			void 								GetNodeProps(const tinygltf::Node& node, const tinygltf::Model& model, size_t& vertexCount, size_t& indexCount);
-			void 								LoadSkins(tinygltf::Model& gltfModel);
-			void 								LoadTextures(tinygltf::Model& gltfModel);
-			VkSamplerAddressMode 				GetVkWrapMode(int32_t wrapMode);
-			VkFilter 							GetVkFilterMode(int32_t filterMode);
-			void 								LoadTextureSamplers(tinygltf::Model& gltfModel);
-			void 								LoadMaterials(tinygltf::Model& gltfModel);
-			void 								LoadAnimations(tinygltf::Model& gltfModel);
-			void 								LoadFromFile(std::string filename, float scale = 1.0) override;
-			void 								DrawNode(Node* node, VkCommandBuffer commandBuffer);
-			void 								Draw(VkCommandBuffer commandBuffer) override;
-			void 								CalculateBoundingBox(Node* node, Node* parent);
-			void 								GetSceneDimensions();
-			void 								UpdateAnimation(uint32_t index, float time) override;
-			Node* 								FindNode(Node* parent, uint32_t index);
-			Node* 								NodeFromIndex(uint32_t index);
-			void 								CreateMaterialBuffer() override;
-			void 								CreateMeshDataBuffer() override;
-
-			void 								CreateDescriptorSet() override;
-			void 								UpdateDescriptorSets() override;
-
-			void 								UpdateMeshDataBuffer(uint32_t index) override;
-			bool 								IsReady() const override;
-			std::unique_ptr<Model> 				Clone() override;
-
-			glm::mat4 							GetAABBBox() override;
-			uint32_t 							GetMaterialCount() override;
-			uint32_t 							GetMeshCount() override;
-			core::Buffer& 						GetMaterialShaderBuffer() override;
-			std::vector<core::Buffer>& 			GetMeshShaderBuffer() override;
-			std::vector<VkDescriptorSet>& 		GetDescriptorSetsMeshData() override;
-			VkDescriptorSet& 					GetDescriptorSetMaterial() override;
-			
-			std::vector<resource::Material>& 	GetMaterialArray() override;
-
-			VkBuffer 							GetVertexBuffer() override;
-			VkBuffer 							GetIndexBuffer() override;
-			std::vector<Node*>& 				GetNodes() override;
-			std::vector<Node*>& 				GetLinearNodes() override;
-			std::vector<Animation>& 			GetAnimations() override;
-	};
+            // set 2 与 set 3；frameIndex 越界返回 VK_NULL_HANDLE。
+            VkDescriptorSet                             GetInstanceSet(uint32_t frameIndex) const;
+            VkDescriptorSet                             GetMaterialSet() const { return this->materialSet_; }
+    };
 }
-

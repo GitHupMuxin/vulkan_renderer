@@ -14,7 +14,7 @@
 #include "engine/render/config/graphics_pipeline_defaults.h"
 #include "engine/render/pipeline_cache_file.h"
 #include "engine/render/render_context.h"
-#include "engine/resource/model.h"
+#include "engine/resource/gltf_model.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/utils/log.h"
 
@@ -24,7 +24,12 @@ namespace engine::render
     {
         std::span<const VkVertexInputAttributeDescription> GetVertexInputAttributes(VertexLayout layout)
         {
-            using Vertex = resource::Model::Vertex;
+            using Vertex = resource::MeshResource::Vertex;
+            // 天空盒仍使用旧系统几何，两种顶点布局必须保持相同。
+            static_assert(sizeof(Vertex) == sizeof(resource::GLTFModelBase::Vertex));
+            static_assert(offsetof(Vertex, pos) == offsetof(resource::GLTFModelBase::Vertex, pos));
+            static_assert(offsetof(Vertex, normal) == offsetof(resource::GLTFModelBase::Vertex, normal));
+            static_assert(offsetof(Vertex, uv0) == offsetof(resource::GLTFModelBase::Vertex, uv0));
             static constexpr std::array<VkVertexInputAttributeDescription, 7> attributes{{
                 {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)},
                 {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
@@ -112,7 +117,7 @@ namespace engine::render
 
     void RenderPass::PrepareDescriptorResources(RenderResourceRegistry& resources)
     {
-        // Pass 只准备自己持有的 Set 0；Model/Material 的 Set 由原所有者准备。
+        // Pass 只准备自己持有的 Set 0；模型/Material 的 Set 由原所有者准备。
         for (const auto& binding : this->description_.descriptorSets_.at(0).bindings_)
             resources.RequireResource(binding.resource_);
     }
@@ -152,7 +157,7 @@ namespace engine::render
             throw std::logic_error("Descriptor sets have already been allocated for this RenderPass");
 
         // SetUpDescriptorSetLayouts must run first. Under the current protocol,
-        // set 0 belongs to the Pass; Model/Material keep their existing sets.
+        // set 0 belongs to the Pass; model/Material keep their existing sets.
         const VkDescriptorSetLayout layout = this->descriptorSetLayouts_.at(0);
         const uint32_t frameCount = core::Device::Instance().GetSetting().frameCount_;
         auto& allocator = core::DescriptorAllocator::Instance();
@@ -279,7 +284,7 @@ namespace engine::render
                 // 顶点输入：Skybox 使用公共顶点的前三个属性，PBR 使用全部属性。
                 const auto attributes = GetVertexInputAttributes(pipeline.vertexLayout_);
                 const VkVertexInputBindingDescription binding{
-                    0, sizeof(resource::Model::Vertex), VK_VERTEX_INPUT_RATE_VERTEX
+                    0, sizeof(resource::MeshResource::Vertex), VK_VERTEX_INPUT_RATE_VERTEX
                 };
                 VkPipelineVertexInputStateCreateInfo vertexInput{};
                 vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -523,9 +528,8 @@ namespace engine::render
     void RenderPass::DrawQueue(std::span<const RenderItem> items, VkCommandBuffer cb, uint32_t frameIndex)
     {
         auto& manager = resource::ResourceManager::Instance();
-        resource::Model* currentModel = nullptr;
+        const resource::MeshResource* currentMesh = nullptr;
         VkPipeline currentPipeline = VK_NULL_HANDLE;
-        const VkDeviceSize offset = 0;
 
         for (const RenderItem& item : items)
         {
@@ -535,15 +539,16 @@ namespace engine::render
                 continue;
             }
 
-            if (model != currentModel)
+            const resource::MeshResource* mesh = model->GetMesh(item.meshIndex);
+            if (mesh == nullptr)
             {
-                const VkBuffer vertexBuffer = model->GetVertexBuffer();
-                vkCmdBindVertexBuffers(cb, 0, 1, &vertexBuffer, &offset);
-                if (model->GetIndexBuffer() != VK_NULL_HANDLE)
-                {
-                    vkCmdBindIndexBuffer(cb, model->GetIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                }
-                currentModel = model;
+                // Item 的几何编号失效时不能沿用上一次绑定。
+                continue;
+            }
+            if (mesh != currentMesh)
+            {
+                model->BindGeometry(cb, item.meshIndex);
+                currentMesh = mesh;
             }
 
             const VkPipeline pipeline = this->SelectScenePipeline(item.pipeline);
@@ -556,22 +561,23 @@ namespace engine::render
             const std::array<VkDescriptorSet, 4> sets{
                 this->descriptorSets_.at(frameIndex),
                 item.materialDescriptorSet,
-                model->GetDescriptorSetsMeshData().at(frameIndex),
-                model->GetDescriptorSetMaterial()
+                model->GetInstanceSet(frameIndex),
+                model->GetMaterialSet()
             };
             vkCmdBindDescriptorSets(
                 cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout_,
                 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr
             );
 
-            // 沿用模型绘制协议：两个 int32 分别索引 MeshData 和 Material SSBO。
+            // 沿用模型绘制协议：第一个 int32 索引逐帧实例矩阵 SSBO（对应 RenderItem::instanceSlot，
+            // 不是几何编号），第二个索引材质 SSBO。
             struct MeshPushConstant
             {
                 int32_t meshIndex;
                 int32_t materialIndex;
             };
             const MeshPushConstant indices{
-                static_cast<int32_t>(item.meshIndex), static_cast<int32_t>(item.materialIndex)
+                static_cast<int32_t>(item.instanceSlot), static_cast<int32_t>(item.materialIndex)
             };
             vkCmdPushConstants(
                 cb, this->pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

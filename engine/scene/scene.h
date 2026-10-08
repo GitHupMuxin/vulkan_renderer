@@ -50,7 +50,7 @@ namespace engine::scene
             const Camera*                       GetCamera() const;
 
             // 便捷解析：handle → 指针（供 SceneExtractor/应用层调用，内部做校验，失败返回 nullptr）
-            resource::Model*                    GetModelAt(size_t index);
+            resource::Model*                            GetModelAt(size_t index);
             size_t                              GetModelCount() const;
     };
     

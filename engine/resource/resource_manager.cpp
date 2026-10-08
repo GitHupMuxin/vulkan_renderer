@@ -1,7 +1,8 @@
 #include <chrono>
 #include <filesystem>
 #include <stdexcept>
-#include "engine/resource/model.h"
+#include "engine/resource/gltf_model.h"
+#include "engine/resource/asset_loader.h"
 #include "engine/resource/resource_manager.h"
 #include "engine/core/staging_ring_allocator.h"
 #include "engine/utils/log.h"
@@ -71,36 +72,22 @@ namespace engine::resource
         }
 
         core::StagingRingAllocator::Instance().WaitUntil(texture->readyAt_);
-        this->textureSlots_.push_back({std::move(texture), 0, ResourceState::Ready});
-        return {static_cast<uint32_t>(this->textureSlots_.size() - 1), 0};
+        uint32_t slotIndex = 0;
+        uint32_t generation = 0;
+        this->texturePool_.Acquire(std::move(texture), ResourceState::Ready, &slotIndex, &generation);
+        return TextureHandle{ slotIndex, generation };
     }
 
     const Texture* ResourceManager::GetTexture(TextureHandle handle) const noexcept
     {
-        if (handle.index >= this->textureSlots_.size()) return nullptr;
-        const auto& slot = this->textureSlots_[handle.index];
-        return slot.state == ResourceState::Ready && slot.generation == handle.generation
-            ? slot.resource.get() : nullptr;
+        return this->texturePool_.Get(handle.index, handle.generation);
     }
 
     void ResourceManager::Cleanup()
     {
-        // Preserve slot indices so a later Init cannot revive an old handle.
-        for (auto& slot : this->textureSlots_)
-        {
-            if (slot.state == ResourceState::Free) continue;
-            slot.resource.reset();
-            slot.state = ResourceState::Free;
-            ++slot.generation;
-        }
-        for (auto& slot : this->modelSlots_)
-        {
-            slot.resource.reset();
-        }
-        for (auto& slot : this->envSlots_)
-        {
-            slot.resource.reset();
-        }
+        this->texturePool_.Clear();
+        this->modelPool_.Clear();
+        this->envPool_.Clear();
         this->pendingDeletions_.clear();
         this->skybox_.reset();
         this->emptyTexture2D_.reset();
@@ -108,114 +95,71 @@ namespace engine::resource
 
     Model* ResourceManager::GetModel(ModelHandle handle)
     {
-        if (handle.index >= this->modelSlots_.size())
-        {
-            return nullptr;
-        }
-        auto& slot = this->modelSlots_[handle.index];
-        if (slot.state != ResourceState::Ready)
-        {
-            return nullptr;
-        }
-        if (slot.generation != handle.generation)
-        {
-            return nullptr;
-        }
-        return slot.resource.get();
+        return this->modelPool_.Get(handle.index, handle.generation);
     }
 
     Model* ResourceManager::PeekModel(ModelHandle handle)
     {
-        if (handle.index >= this->modelSlots_.size())
-        {
-            return nullptr;
-        }
-        auto& slot = this->modelSlots_[handle.index];
-        if (slot.generation != handle.generation)
-        {
-            return nullptr;
-        }
-        return slot.resource.get();
+        return this->modelPool_.Peek(handle.index, handle.generation);
     }
 
     EnvironmentCubeMap* ResourceManager::GetEnvironmentCubeMap(EnvironmentCubeMapHandle handle)
     {
-        if (handle.index >= this->envSlots_.size())
-        {
-            return nullptr;
-        }
-        auto& slot = this->envSlots_[handle.index];
-        if (slot.state != ResourceState::Ready)
-        {
-            return nullptr;
-        }
-        if (slot.generation != handle.generation)
-        {
-            return nullptr;
-        }
-        return slot.resource.get();
+        return this->envPool_.Get(handle.index, handle.generation);
     }
 
     bool ResourceManager::IsModelAlive(ModelHandle handle) const
     {
-        return handle.index < this->modelSlots_.size()
-            && this->modelSlots_[handle.index].state == ResourceState::Ready
-            && this->modelSlots_[handle.index].generation == handle.generation;
+        return this->modelPool_.IsAlive(handle.index, handle.generation);
     }
 
     bool ResourceManager::IsEnvironmentAlive(EnvironmentCubeMapHandle handle) const
     {
-        return handle.index < this->envSlots_.size()
-            && this->envSlots_[handle.index].state == ResourceState::Ready
-            && this->envSlots_[handle.index].generation == handle.generation;
+        return this->envPool_.IsAlive(handle.index, handle.generation);
     }
 
-    uint32_t ResourceManager::GetModelSize() const
+    uint32_t ResourceManager::GetModelSlotCount() const
     {
-        return static_cast<uint32_t>(this->modelSlots_.size());
+        return this->modelPool_.GetSlotCount();
     }
 
-    uint32_t ResourceManager::GetEnvironmentCubeMapSize() const
+    uint32_t ResourceManager::GetEnvironmentCubeMapSlotCount() const
     {
-        return static_cast<uint32_t>(this->envSlots_.size());
+        return this->envPool_.GetSlotCount();
     }
 
     void ResourceManager::ReleaseModel(ModelHandle handle)
     {
-        if (handle.index >= this->modelSlots_.size())
+        // 不立即销毁：GPU 可能还在用该模型的 VBO/IBO。进待删队列，等 frameCount 帧
+        // （保证所有 in-flight 帧完成）后由 OnFrameCompleted 真正销毁。
+        if (!this->modelPool_.Release(handle.index, handle.generation))
         {
             return;
         }
-        auto& slot = this->modelSlots_[handle.index];
-        if (slot.state != ResourceState::Ready)
-        {
-            return;
-        }
-        slot.state = ResourceState::PendingDelete;
-        slot.generation++;
-        // ② 不立即 reset()：GPU 可能还在用该模型的 VBO/IBO。
-        //    进待删队列，等 frameCount 帧（保证所有 in-flight 帧完成）后由 OnFrameCompleted 真正销毁
-        this->pendingDeletions_.push_back({
-            handle.index, true, this->currentFrame_ + this->frameCount_
-        });
-        LOG_INFO("ResourceManager: model[" << handle.index << "] queued for deferred delete, retire at frame " << (this->currentFrame_ + this->frameCount_));
+        const uint32_t retireFrame = this->currentFrame_ + this->frameCount_;
+        this->pendingDeletions_.push_back({ ResourceKind::Model, handle.index, retireFrame });
+        LOG_INFO("ResourceManager: model[" << handle.index << "] queued for deferred delete, retire at frame " << retireFrame);
     }
 
     void ResourceManager::ReleaseEnvironmentCubeMap(EnvironmentCubeMapHandle handle)
     {
-        if (handle.index >= this->envSlots_.size())
+        if (!this->envPool_.Release(handle.index, handle.generation))
         {
             return;
         }
-        auto& slot = this->envSlots_[handle.index];
-        if (slot.state != ResourceState::Ready)
-        {
-            return;
-        }
-        slot.state = ResourceState::PendingDelete;
-        slot.generation++;
         this->pendingDeletions_.push_back({
-            handle.index, false, this->currentFrame_ + this->frameCount_
+            ResourceKind::EnvironmentCubeMap, handle.index, this->currentFrame_ + this->frameCount_
+        });
+    }
+
+    void ResourceManager::ReleaseTexture(TextureHandle handle)
+    {
+        if (!this->texturePool_.Release(handle.index, handle.generation))
+        {
+            return;
+        }
+        this->pendingDeletions_.push_back({
+            ResourceKind::Texture, handle.index, this->currentFrame_ + this->frameCount_
         });
     }
 
@@ -224,39 +168,38 @@ namespace engine::resource
         this->currentFrame_++;
 
         // Uploading → Ready：GPU 上传回执达成（顶点/索引/材质/纹理全部完成）的模型转为可渲染
-        for (auto& slot : this->modelSlots_)
+        for (auto& entry : this->modelPool_.GetEntries())
         {
-            if (slot.state == ResourceState::Uploading && slot.resource->IsReady())
+            if (entry.state == ResourceState::Uploading && entry.resource->IsReady())
             {
-                slot.state = ResourceState::Ready;
+                entry.state = ResourceState::Ready;
                 LOG_INFO("ResourceManager: model upload completed, ready to render.");
             }
         }
 
         for (auto it = this->pendingDeletions_.begin(); it != this->pendingDeletions_.end(); )
         {
-            if (it->retireFrame <= this->currentFrame_)
-            {
-                // 到期：该帧的 GPU 工作已确认完成，资源不再被使用，安全销毁
-                if (it->isModel && it->poolIndex < this->modelSlots_.size())
-                {
-                    auto& slot = this->modelSlots_[it->poolIndex];
-                    slot.resource.reset();          // 真正销毁 GPU 资源
-                    slot.state = ResourceState::Free;
-                    LOG_INFO("ResourceManager: model[" << it->poolIndex << "] destroyed at frame " << this->currentFrame_);
-                }
-                else if (!it->isModel && it->poolIndex < this->envSlots_.size())
-                {
-                    auto& slot = this->envSlots_[it->poolIndex];
-                    slot.resource.reset();
-                    slot.state = ResourceState::Free;
-                }
-                it = this->pendingDeletions_.erase(it);
-            }
-            else
+            if (it->retireFrame > this->currentFrame_)
             {
                 ++it;
+                continue;
             }
+
+            // 到期：该帧的 GPU 工作已确认完成，资源不再被使用，安全销毁
+            switch (it->kind)
+            {
+                case ResourceKind::Model:
+                    this->modelPool_.DestroySlot(it->slotIndex);
+                    LOG_INFO("ResourceManager: model[" << it->slotIndex << "] destroyed at frame " << this->currentFrame_);
+                    break;
+                case ResourceKind::EnvironmentCubeMap:
+                    this->envPool_.DestroySlot(it->slotIndex);
+                    break;
+                case ResourceKind::Texture:
+                    this->texturePool_.DestroySlot(it->slotIndex);
+                    break;
+            }
+            it = this->pendingDeletions_.erase(it);
         }
     }
 
@@ -265,7 +208,7 @@ namespace engine::resource
         return this->emptyTexture2D_.get();
     }
 
-    Model* ResourceManager::GetSkybox()
+    GLTFModelBase* ResourceManager::GetSkybox()
     {
         return this->skybox_.get();
     }
@@ -273,30 +216,40 @@ namespace engine::resource
     ModelHandle ResourceManager::LoadModel(const std::string& fileName)
     {
         LOG_INFO("ResourceManager: start to load model from file: " + fileName);
-        auto& device = core::Device::Instance();
+        const auto tStart = std::chrono::high_resolution_clock::now();
+        ModelData data;
+        std::string error;
+        if (!AssetLoader::LoadModelData(fileName, &data, &error))
+        {
+            // 导入失败不能登记空资源；沿用加载异常交给调用方处理。
+            throw std::runtime_error(error);
+        }
 
-		// animationIndex = 0;
-		// animationTimer = 0.0f;
-		auto tStart = std::chrono::high_resolution_clock::now();
-        std::unique_ptr<Model> model = std::make_unique<GLTFModel>();
-        model->LoadFromFile(fileName);
-		model->CreateMaterialBuffer();
-		model->CreateMeshDataBuffer();
-        model->CreateDescriptorSet();
-        model->UpdateDescriptorSets();
-		auto tFileLoad = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - tStart).count();
-		LOG_INFO("ResourceManager: model loaded in " << tFileLoad << " ms: " << fileName);
+        auto model = std::make_unique<Model>();
+        try
+        {
+            if (!model->Create(data, &error))
+            {
+                throw std::runtime_error(error);
+            }
+        }
+        catch (...)
+        {
+            // 部分资源可能已提交上传，局部 Model 析构前必须等这些拷贝结束。
+            core::StagingRingAllocator::Instance().WaitAll();
+            throw;
+        }
+        const auto tFileLoad = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - tStart).count();
+        LOG_INFO("ResourceManager: model loaded in " << tFileLoad << " ms: " << fileName);
 
-        // this->modelArray_.emplace_back(std::move(model));
-        ResourceSlot<Model> slot;
-        slot.resource = std::move(model);
-        slot.generation = 0;
+        uint32_t slotIndex = 0;
+        uint32_t generation = 0;
         // 异步上传已提交但未等待：标记 Uploading，GPU 回执达成后由 OnFrameCompleted 转 Ready。
-        // 期间 GetModel 校验 state != Ready 返回 nullptr → SceneExtractor 不生成 RenderItem → 不渲染。
-        slot.state = ResourceState::Uploading;
-        this->modelSlots_.emplace_back(std::move(slot));
+        // PeekModel 可提取 CPU 绘制任务；GetModel 在绘制端拦住未就绪资源。
+        this->modelPool_.Acquire(std::move(model), ResourceState::Uploading, &slotIndex, &generation);
 
-        return ModelHandle{ static_cast<uint32_t>(this->modelSlots_.size() - 1), 0 };
+        return ModelHandle{ slotIndex, generation };
     }
    
     
@@ -306,12 +259,10 @@ namespace engine::resource
         std::unique_ptr<EnvironmentCubeMap> cubeMap = std::make_unique<EnvironmentCubeMap>();
         // LoadFromFile 内部已调用 GenerateCubemaps，不要重复生成
         cubeMap->LoadFromFile(fileName, VK_FORMAT_R16G16B16A16_SFLOAT);
-        ResourceSlot<EnvironmentCubeMap> slot;
-        slot.resource = std::move(cubeMap);
-        slot.generation = 0;
-        slot.state = ResourceState::Ready;
-        this->envSlots_.emplace_back(std::move(slot));
-        return EnvironmentCubeMapHandle{ static_cast<uint32_t>(this->envSlots_.size() - 1), 0 };
+        uint32_t slotIndex = 0;
+        uint32_t generation = 0;
+        this->envPool_.Acquire(std::move(cubeMap), ResourceState::Ready, &slotIndex, &generation);
+        return EnvironmentCubeMapHandle{ slotIndex, generation };
     }
 
 }

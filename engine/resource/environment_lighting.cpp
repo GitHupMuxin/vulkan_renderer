@@ -542,7 +542,7 @@ namespace engine::resource
 
 					VkDeviceSize offsets[1] = { 0 };
 
-					Model* skybox = resource::ResourceManager::Instance().skybox_.get();  // change ResourceManager to singleton design pattern
+					GLTFModelBase* skybox = resource::ResourceManager::Instance().skybox_.get();  // change ResourceManager to singleton design pattern
 					skybox->Draw(cmdBuf);
 
 					vkCmdEndRenderPass(cmdBuf);
